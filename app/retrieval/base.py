@@ -1,9 +1,9 @@
 """定义不同检索方案共享的调用契约。
 
-上层先通过 ``load_documents`` 获取完整的 ``PolicyDocument`` 集合，再调用
-具体检索器的 ``build`` 构建内部索引，最后调用 ``retrieve`` 返回统一的
-``RetrievedDocument`` 列表。本模块只定义接口，不读取文件、不实现检索算法，
-也不负责 Benchmark、排序规则或大模型调用。
+上层先通过 ``app.knowledge.loader.load_documents`` 获取完整的
+``PolicyDocument`` 集合，再调用具体检索器的 ``build`` 构建内部索引，最后
+调用 ``retrieve`` 返回统一的 ``RetrievedDocument`` 列表。本模块只定义接口，
+不读取文件、不实现检索算法，也不负责 Benchmark、排序规则或大模型调用。
 """
 
 from collections.abc import Sequence
