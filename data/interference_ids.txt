@@ -1,0 +1,12 @@
+# policies.json 中人为加入的干扰项
+# 序号为 policies.json 数组中的 1-based 位置；格式：序号 | id | 类型 | 过滤原因
+
+89 | noise-duplicate-government-procurement-law | duplicate | 与 policy-20020629-government-procurement-law 完全重复
+90 | noise-near-duplicate-procurement-law | near_duplicate | 与 policy-20020629-government-procurement-law 同源且正文高度相似
+91 | noise-unrelated-film-news | irrelevant_entertainment | 真实电影资讯，与政府采购、招投标和公共资源交易无关
+92 | noise-unrelated-sports-news | irrelevant_sports | 真实体育资讯，与目标知识域无关
+93 | noise-unrelated-culture-tourism | irrelevant_culture | 真实文旅资讯，与政府采购、招投标和公共资源交易无关
+94 | noise-unrelated-fan-circle | irrelevant_gossip | 真实文娱及饭圈网络治理报道，与目标知识域无关
+95 | noise-source-title-mismatch | source_mismatch | 标题和正文主题与 source URL 指向的政府采购通知不一致
+96 | noise-incorrect-procurement-fact | factual_error | 正文包含与原始来源冲突的错误采购政策结论
+97 | noise-wrong-date-procurement-law | metadata_error | 日期与原始来源对应的法律文本信息不一致
