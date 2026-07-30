@@ -10,10 +10,12 @@ from .exceptions import (
     AppErrorCode,
     AppException,
     KNOWLEDGE_DOCUMENT_LOAD_FAILED,
+    KNOWLEDGE_RETRIEVAL_FAILED,
 )
 
 __all__ = [
     "AppErrorCode",
     "AppException",
     "KNOWLEDGE_DOCUMENT_LOAD_FAILED",
+    "KNOWLEDGE_RETRIEVAL_FAILED",
 ]

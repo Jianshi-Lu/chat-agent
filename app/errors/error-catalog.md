@@ -10,6 +10,7 @@
 | Python 错误对象 | 错误代码 | 出错模块 | 主要阶段 | HTTP 状态 | 是否可重试 |
 |---|---|---|---|---:|---|
 | `KNOWLEDGE_DOCUMENT_LOAD_FAILED` | `KNOWLEDGE_INGESTION_AGENT.DOCUMENT_LOAD_FAILED` | `app.knowledge.loader` | 由 `stage` 和 `message` 说明 | 500 | 否 |
+| `KNOWLEDGE_RETRIEVAL_FAILED` | `KNOWLEDGE_INGESTION_AGENT.RETRIEVAL_FAILED` | `app.retrieval` | 由 `stage` 和 `message` 说明 | 500 | 否 |
 
 ## 维护规则
 

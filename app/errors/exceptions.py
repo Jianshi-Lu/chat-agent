@@ -84,3 +84,10 @@ KNOWLEDGE_DOCUMENT_LOAD_FAILED = AppErrorCode(
     default_message="知识文档加载失败",
     retryable=False,
 )
+
+KNOWLEDGE_RETRIEVAL_FAILED = AppErrorCode(
+    code="KNOWLEDGE_INGESTION_AGENT.RETRIEVAL_FAILED",
+    http_status=500,
+    default_message="知识文档检索失败",
+    retryable=False,
+)
