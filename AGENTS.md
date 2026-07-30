@@ -41,25 +41,41 @@ Java 项目位于同级目录 `../smart-bid-platform-be`，其中已经实现了
 
 ## 2. 当前仓库事实
 
-截至当前工作区，项目是刚初始化的 FastAPI/uv 脚手架：
+截至当前工作区，项目已经完成本地政策文档基础能力和可替换检索器公共契约，当前仍处于检索实现阶段：
 
 ```text
 knowledge-ingestion-agent/
-├── main.py          # 当前唯一 Python 应用入口，只有演示路由
-├── pyproject.toml   # 项目元数据和直接依赖
-├── uv.lock          # uv 锁定的依赖解析结果
-├── test_main.http   # 两个演示路由的 HTTP 请求示例
-└── AGENTS.md        # 本文件
+├── main.py                         # FastAPI 应用入口，目前只有演示路由
+├── app/
+│   ├── errors/                     # AppErrorCode、AppException 和错误代码
+│   ├── knowledge/                  # PolicyDocument、JSON Loader 和知识包边界
+│   └── retrieval/                  # Retriever、RetrievedDocument 公共契约
+├── data/
+│   ├── policies.json               # 当前 97 条本地政策/资讯文档
+│   └── interference_ids.txt        # 干扰数据标识，仅作为测试资料
+├── tests/
+│   ├── __init__.py
+│   └── test_loader.py              # 当前 Loader smoke test
+├── pyproject.toml                  # 项目元数据和直接依赖
+├── uv.lock                         # uv 锁定的依赖解析结果
+├── test_main.http                  # 演示路由的 HTTP 请求示例
+└── AGENTS.md                       # 本文件
 ```
 
 当前没有：
 
-- 其他 Python package、Service、Repository、Mapper、数据库实体或数据库定义；
-- README、应用配置文件、`.env.example`、Dockerfile、CI 配置或正式测试目录；
+- 业务 Service、Repository、Mapper、数据库实体或数据库定义；
+- README、应用配置文件、`.env.example`、Dockerfile 或 CI 配置；
 - `/policy-ingestion/jobs` 业务路由；
-- LangChain、MinIO、MarkItDown、Embedding、向量数据库、爬虫、任务队列或持久化任务表实现。
+- Keyword、BM25、Vector、Hybrid 具体检索器及 RetrieverRouter；
+- LangChain 调用链、MinIO、MarkItDown、Embedding、向量数据库、爬虫、任务队列或持久化任务表实现。
 
-项目 Git 仓库当前尚无提交；工作区中已有的 IDE/脚手架文件属于现有工作区状态，后续 Agent 不应为了整理本文件而修改或清理它们。
+当前 `master` 已包含以下检索基础提交：
+
+- `c8e35a1 feat(retrieval): 建立可替换检索器公共契约`；
+- `bacb8a5 refactor(retrieval): 将检索能力提升为独立应用包`。
+
+后续默认沿 `master` 单线开发，通过小粒度提交区分不同检索实现；只有在高风险实验、依赖冲突或多人并行时才临时创建分支。
 
 ## 3. 当前技术栈与运行方式
 
@@ -74,9 +90,9 @@ knowledge-ingestion-agent/
 | Web | FastAPI `>=0.140.7` | HTTP API |
 | ASGI 服务 | Uvicorn `>=0.51.0` | 启动 FastAPI 应用 |
 
-`uv.lock` 当前解析出的直接依赖版本为 FastAPI `0.140.7` 和 Uvicorn `0.51.0`，其余为框架传递依赖。新增依赖必须通过 `pyproject.toml` 和 `uv.lock` 一起维护，不要只手工修改锁文件。
+`uv.lock` 当前锁定了项目声明的直接依赖及其传递依赖。新增或移除依赖必须通过 `pyproject.toml` 和 `uv.lock` 一起维护，不要只手工修改锁文件。
 
-LangChain、MinIO SDK、MarkItDown、向量数据库客户端、Embedding 模型客户端和爬取工具均属于“计划引入、当前未安装”，具体包和版本待实现阶段根据接口和部署方式确定。
+当前 `pyproject.toml` 已声明 `langchain`、`langchain-openai` 和 `pydantic-settings`，但代码尚未接入 LangChain 调用链、模型服务或配置类。MinIO SDK、MarkItDown、向量数据库客户端、Embedding 模型客户端和爬取工具仍属于计划引入能力，具体包和版本待对应阶段确定。
 
 ### 3.2 当前应用入口
 
@@ -107,6 +123,39 @@ uv run uvicorn main:app --reload --host 127.0.0.1 --port 8000
 - 任务超时、并发、重试和保留策略。
 
 凭据必须通过环境变量或部署平台 Secret 注入，不能写进 `pyproject.toml`、源码、测试请求或 `AGENTS.md`。
+
+### 3.4 当前知识与检索包边界
+
+`app.knowledge` 和 `app.retrieval` 采用单向依赖：
+
+```text
+app.knowledge
+  ├── PolicyDocument
+  └── load_documents()
+          ↑
+          │ 具体 Retriever 接收其返回值
+app.retrieval
+  ├── Retriever
+  ├── RetrievedDocument
+  └── 后续 Keyword / Vector / Hybrid 实现
+```
+
+当前已经实现：
+
+- `app.knowledge.schemas.PolicyDocument`：定义字段契约并执行单条文档校验；
+- `app.knowledge.loader.load_documents()`：读取 UTF-8 JSON，校验顶层数组、文档字段和全局 ID 唯一性；
+- `app.retrieval.Retriever`：规定 `build(documents)` 和 `retrieve(query, top_k)` 两阶段生命周期；
+- `app.retrieval.RetrievedDocument`：统一各检索器返回的文档字段和内部排序分数。
+
+检索公共包只定义调用边界，不读取 `data/policies.json`，不读取或过滤 `data/interference_ids.txt`，不实现具体相关度算法，不执行分块、向量化或大模型调用。`score` 只在同一种检索算法内部用于排序，不可直接跨算法比较。
+
+当前检索实现顺序为：
+
+```text
+Keyword → Vector → Hybrid → BM25（可选词法基线）
+```
+
+“选择哪种检索算法”和“向模型提供完整正文还是片段”属于两个职责：前者由后续 `RetrieverRouter` 决定，后者由独立 `ContextBuilder` 决定。
 
 ## 4. Java 对接契约
 
@@ -257,20 +306,26 @@ policy/{source}/{documentId}/converted/{version}.md
 
 ## 7. 测试与开发约定
 
-当前只有 `test_main.http`，没有 pytest、测试夹具、集成测试或 CI 配置。新增业务时至少应补充：
+当前已经引入 pytest，并存在 Loader smoke test；正式 API、检索器和外部依赖测试尚未补齐。新增业务时至少应补充：
 
+- Loader/模型测试：默认数据加载、字段校验、异常和数据边界；
+- Retriever 单元测试：build 生命周期、查询、Top-K、稳定排序、空结果和异常；
 - API 契约测试：启动任务、查询任务、参数错误、未知 job；
 - 单元测试：文档 ID/指纹、去重、版本判断、路径生成、状态收敛；
 - 存储适配测试：MinIO 客户端应通过接口 mock 或测试容器隔离；
 - 外部来源和模型调用测试：使用 stub，不在测试中依赖真实网站或真实凭据；
 - 失败恢复测试：单文档失败、部分失败、进程重启/超时恢复和重复任务。
 
-当前开发验证只能覆盖：
+当前仓库可以执行的基础验证包括：
 
 ```text
+uv run pytest
+.venv/bin/pytest -q             # 当本机 uv 缓存权限导致 uv run 无法执行时的本地替代
 GET http://127.0.0.1:8000/
 GET http://127.0.0.1:8000/hello/User
 ```
+
+当前 Loader smoke test 预期能够加载 97 条文档。实现新的 Retriever 时，必须补充对应的功能测试；正式 Benchmark 等至少两种检索方案稳定运行后再建立，不作为第一个检索器的前置条件。
 
 新增依赖和命令优先使用 uv，例如通过 `uv add` 更新 `pyproject.toml` 和 `uv.lock`，通过 `uv run` 执行项目命令。不要提交 `.venv`、`__pycache__`、日志、构建产物或缓存。
 
@@ -283,14 +338,25 @@ GET http://127.0.0.1:8000/hello/User
 - Uvicorn 运行依赖；
 - `/` 和 `/hello/{name}` 两个脚手架演示路由；
 - `uv.lock` 依赖锁文件；
-- Java 侧已存在的启动/查询任务 DTO 契约可作为 Python API 实现依据。
+- `app.errors` 模块级 `AppErrorCode`、`AppException` 和知识文档加载错误代码；
+- `app.knowledge.schemas.PolicyDocument` 文档模型；
+- `app.knowledge.loader.load_documents()` 本地 JSON Loader；
+- `data/policies.json` 当前 97 条政策/资讯文档及保留干扰数据；
+- `app.retrieval.Retriever` 公共 Protocol；
+- `app.retrieval.RetrievedDocument` 统一检索结果模型；
+- Java 侧已存在的启动/查询任务 DTO 契约，可作为后续 Python API 实现依据；
+- Loader smoke test，当前能够验证正式数据加载结果。
 
 ### 8.2 未完成
 
+- Keyword、Vector、Hybrid 和可选 BM25 Retriever；
+- RetrieverRouter 和 Context Builder；
+- 正式 Benchmark；
+- LangChain 固定问答链、结构化 Agent 和模型调用配置；
+- Python 查询 API；
 - `/policy-ingestion/jobs` 的 POST/GET API；
 - 任务状态存储、后台执行模型、并发限制、重试和恢复；
 - 信息源配置和抓取器；
-- LangChain 编排；
 - 去重、版本管理和内容规范化；
 - MinIO original/converted 持久化；
 - Markdown 转换；
@@ -314,23 +380,43 @@ GET http://127.0.0.1:8000/hello/User
 
 ## 9. 后续 Agent 的实现顺序
 
-在不推翻 FastAPI + uv + 独立 Python 服务选型的前提下，建议按以下里程碑推进：
+当前 MileStone1 Demo 按“先完成可替换检索链路，再接模型和接口”的顺序推进；长期 ingestion 业务仍按 Java 调度、Python 执行的边界实现：
 
-1. 先把 `/policy-ingestion/jobs` 启动/查询接口和 Java DTO 契约固定，并补充 Pydantic request/response model；
-2. 设计 job/document 状态模型和最小持久化方案，先实现可恢复的后台任务骨架；
-3. 接入信息源配置与抓取器，完成去重、原始内容落盘 MinIO；
-4. 接入 Markdown 转换，保证 original/converted object key 和文档结果可追踪；
-5. 使用 LangChain 编排确定性处理链，补齐单文档和批次失败收敛；
-6. 接入分块、Embedding 和向量数据库，返回 `indexedCount`/`chunkCount` 的真实值；
-7. 与 Java 定时触发、状态查询及错误码联调，再扩展前端展示。
+1. 实现 `app.retrieval.keyword.KeywordRetriever`，完成词表、文本格式化、评分、Top-K 和功能测试；
+2. 实现 Vector Retriever，先对当前短文档验证整篇 Embedding，长文档再引入分块；
+3. 实现 Hybrid Retriever，通过排名融合组合 Keyword 和 Vector；
+4. 需要词法对照时再实现 BM25；
+5. 增加 RetrieverRouter 和 Context Builder，拆分算法选择与全文/片段组装；
+6. 至少两种检索方式稳定后建立正式 Benchmark；
+7. 接入 LangChain 固定问答链和结构化 RetrievalPlan，保留无候选直接拒答闸门；
+8. 增加 Python 查询 API，再与 Java 查询链路联调；
+9. 最后实现 `/policy-ingestion/jobs`、信息源抓取、MinIO、任务状态和失败恢复等长期 ingestion 能力。
 
 每一步都应先写契约/状态/失败边界，再引入对应依赖；不要先搭“自由 Agent”而缺少可恢复的任务状态和持久化事实。
 
-## 10. Python 注释与文档字符串规范
+## 10. 提交规范
+
+提交应保持一个提交对应一个可独立理解的逻辑变更。提交标题使用：
+
+```text
+<type>(<scope>): <简短中文结论>
+```
+
+正文尽可能说明：
+
+- 问题：原有结构或行为造成了什么问题；
+- 调整：本次具体修改了哪些文件/边界/调用链；
+- 调用边界：输入、输出、上下游关系和未涉及的职责；
+- 当前范围：明确哪些规划能力仍未实现；
+- 验证：执行过的命令、关键结果和已知限制。
+
+只看提交日志也应能够理解本次变更解决了什么问题。除非用户明确要求，不执行 `git push`；不在提交中写入凭据、个人隐私或真实内部地址。
+
+## 11. Python 注释与文档字符串规范
 
 Python 模块、包和公开类/函数的注释与文档字符串统一使用中文；Python、FastAPI、Pydantic、LangChain、MinIO 等技术名词和 API 名称保留英文，避免为了翻译而失去可检索性。注释服务于理解代码，不重复显而易见的语法。
 
-### 10.1 注释必须说明什么
+### 11.1 注释必须说明什么
 
 - 模块级文档字符串：说明模块的职责边界、主要输入输出，以及它在当前调用链中的位置；同时明确尚未接入的关键外部能力，避免把规划误认为现状。
 - 包级文档字符串：说明包负责的领域和对外提供的能力，并指出上层服务应如何依赖该包。
@@ -338,7 +424,7 @@ Python 模块、包和公开类/函数的注释与文档字符串统一使用中
 - 关键内部函数或校验器：说明校验/转换发生的时机、原因、返回值以及是否会改写输入。简单的一行代理函数不强制添加重复注释。
 - 中间件或外部依赖：在首次接入的模块级或公开对象文档中说明基本用法、核心原理、输入输出边界和调用/流转链路。例如：FastAPI 接收 HTTP 请求并序列化响应，Pydantic 在模型实例化时校验并转换字段，LangChain 编排步骤，MinIO 通过对象 key 读写原始或派生文件。
 
-### 10.2 篇幅与写法
+### 11.2 篇幅与写法
 
 - 以“目的 → 输入 → 处理/依赖 → 输出 → 失败边界”为最小说明链路，保持简洁；只有跨模块、异步任务或外部依赖才展开中间流转。
 - 优先使用中文完整句子；必要的命令、路径、字段名、类型名和状态值使用代码格式标记。
