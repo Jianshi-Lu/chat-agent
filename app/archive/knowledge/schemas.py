@@ -4,6 +4,7 @@
 ``PolicyDocument`` 时执行类型转换和字段校验，成功后返回模型实例；失败
 时抛出 ``ValidationError``，由上层 Loader 补充文件位置和加载阶段信息。
 本模块不读取文件，不判断相关性，不执行集合去重、排序、检索或模型调用。
+当前模型随 Loader 一并归档，不属于聊天入口的运行依赖。
 """
 
 from datetime import date, datetime

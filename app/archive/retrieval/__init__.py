@@ -1,12 +1,12 @@
 """检索领域包。
 
-本包负责定义不同检索方案共享的输入输出契约。当前提供统一的
-``Retriever`` 调用协议和 ``RetrievedDocument`` 返回模型；具体的关键词、
-BM25、向量和混合检索器会在后续模块中实现。
+本归档包保留不同检索方案共享的输入输出契约、``Retriever`` 调用协议、
+``RetrievedDocument`` 返回模型和已实现的 ``KeywordRetriever``。BM25、向量
+和混合检索器尚未实现，当前聊天入口不依赖本包。
 """
 
-# TODO：按以下结构逐步补充具体检索实现；当前包只提供公共契约出口。
-# app/retrieval/
+# 以下目录只记录恢复检索开发时可能继续扩展的结构。
+# app/archive/retrieval/
 # ├── __init__.py                 → 公共出口
 # ├── base.py                     → Retriever Protocol
 # ├── schemas.py                  → RetrievedDocument

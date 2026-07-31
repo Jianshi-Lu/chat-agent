@@ -1,4 +1,4 @@
-"""验证最小 Keyword Retriever 的生命周期和基础查询行为。
+"""验证归档 Keyword Retriever 的生命周期和基础查询行为。
 
 测试通过 Loader 提供正式的 97 条 ``PolicyDocument``，再调用
 ``KeywordRetriever.build`` 保存文档集合，最后通过 ``retrieve`` 验证结果、
@@ -8,8 +8,8 @@
 import pytest
 
 from app.errors import AppException, KNOWLEDGE_RETRIEVAL_FAILED
-from app.knowledge.loader import load_documents
-from app.retrieval.keyword import KeywordRetriever
+from app.archive.knowledge.loader import load_documents
+from app.archive.retrieval.keyword import KeywordRetriever
 
 
 @pytest.fixture

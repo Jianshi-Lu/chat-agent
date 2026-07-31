@@ -1,4 +1,4 @@
-"""定义 Keyword Retriever 使用的政府采购领域概念词表。
+"""定义归档 Keyword Retriever 使用的政府采购领域概念词表。
 
 本模块是关键词检索的领域知识层，不读取 ``policies.json``，也不保存文档
 ID、不执行文档过滤或评分。``KEYWORD_GROUPS`` 将同一业务概念下的正式

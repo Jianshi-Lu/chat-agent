@@ -8,6 +8,8 @@
 本模块不读取文件、不读取或过滤 ``interference_ids.txt``，不修改原始文档，
 也不调用 LangChain、大模型或向量数据库。文档集合保存在内存中，后续查询
 可以复用同一个检索器实例。
+
+当前实现已归档，不属于聊天入口的运行依赖。
 """
 
 from collections.abc import Sequence
@@ -16,8 +18,8 @@ import re
 import unicodedata
 
 from app.errors import AppException, KNOWLEDGE_RETRIEVAL_FAILED
-from app.knowledge.schemas import PolicyDocument
-from app.retrieval.schemas import RetrievedDocument
+from app.archive.knowledge.schemas import PolicyDocument
+from app.archive.retrieval.schemas import RetrievedDocument
 
 from .terms import KEYWORD_GROUPS
 
@@ -233,7 +235,7 @@ class KeywordRetriever:
 
         return AppException(
             KNOWLEDGE_RETRIEVAL_FAILED,
-            module="retrieval.keyword",
+            module="archive.retrieval.keyword",
             operation="retrieve",
             stage=stage,
             message=message,

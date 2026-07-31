@@ -8,6 +8,8 @@
 当前 MVP 一次性把文件和模型列表加载到内存中。模块只负责读取、结构校验和
 集合校验，不负责相关性判断、去重清洗、排序、检索、分块、向量化或调用模型；
 因此干扰数据会原样进入返回结果，交由后续处理阶段决定如何使用。
+
+当前实现已归档，不属于聊天入口的运行依赖。
 """
 
 import json
@@ -25,7 +27,7 @@ from app.errors import (
 from .schemas import PolicyDocument
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_POLICIES_PATH = PROJECT_ROOT / "data" / "policies.json"
 
 
@@ -49,7 +51,7 @@ def _parse_documents(payload: Any) -> list[PolicyDocument]:
     if not isinstance(payload, list):
         raise AppException(
             KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-            module="knowledge.loader",
+            module="archive.knowledge.loader",
             operation="load_documents",
             stage="validate_structure",
             message="政策文档 JSON 顶层结构必须是数组",
@@ -60,7 +62,7 @@ def _parse_documents(payload: Any) -> list[PolicyDocument]:
         if not isinstance(item, dict):
             raise AppException(
                 KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-                module="knowledge.loader",
+                module="archive.knowledge.loader",
                 operation="load_documents",
                 stage="validate_document",
                 message=f"第 {index} 条文档校验失败：必须是 JSON 对象",
@@ -73,7 +75,7 @@ def _parse_documents(payload: Any) -> list[PolicyDocument]:
             reason = str(exc)
             raise AppException(
                 KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-                module="knowledge.loader",
+                module="archive.knowledge.loader",
                 operation="load_documents",
                 stage="validate_document",
                 message=f"第 {index} 条文档校验失败：{reason}",
@@ -102,7 +104,7 @@ def _ensure_unique_ids(documents: list[PolicyDocument]) -> None:
         if document.id in seen_ids:
             raise AppException(
                 KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-                module="knowledge.loader",
+                module="archive.knowledge.loader",
                 operation="load_documents",
                 stage="validate_collection",
                 message=f"发现重复文档 ID：{document.id}",
@@ -139,7 +141,7 @@ def load_documents(
     except TypeError as exc:
         raise AppException(
             KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-            module="knowledge.loader",
+            module="archive.knowledge.loader",
             operation="load_documents",
             stage="prepare_path",
             message=f"政策文档路径无效：{path!r}",
@@ -149,7 +151,7 @@ def load_documents(
         if not file_path.exists():
             raise AppException(
                 KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-                module="knowledge.loader",
+                module="archive.knowledge.loader",
                 operation="load_documents",
                 stage="check_file",
                 message=f"政策文档文件不存在：{file_path}",
@@ -158,7 +160,7 @@ def load_documents(
         if not file_path.is_file():
             raise AppException(
                 KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-                module="knowledge.loader",
+                module="archive.knowledge.loader",
                 operation="load_documents",
                 stage="check_file",
                 message=f"政策文档路径不是文件：{file_path}",
@@ -167,7 +169,7 @@ def load_documents(
     except OSError as exc:
         raise AppException(
             KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-            module="knowledge.loader",
+                module="archive.knowledge.loader",
             operation="load_documents",
             stage="check_file",
             message="政策文档文件检查失败",
@@ -179,7 +181,7 @@ def load_documents(
     except (OSError, UnicodeError) as exc:
         raise AppException(
             KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-            module="knowledge.loader",
+            module="archive.knowledge.loader",
             operation="load_documents",
             stage="read_file",
             message="政策文档文件读取失败",
@@ -191,7 +193,7 @@ def load_documents(
     except JSONDecodeError as exc:
         raise AppException(
             KNOWLEDGE_DOCUMENT_LOAD_FAILED,
-            module="knowledge.loader",
+            module="archive.knowledge.loader",
             operation="load_documents",
             stage="parse_json",
             message=f"政策文档 JSON 格式错误：第 {exc.lineno} 行第 {exc.colno} 列",
