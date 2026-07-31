@@ -91,3 +91,24 @@ KNOWLEDGE_RETRIEVAL_FAILED = AppErrorCode(
     default_message="知识文档检索失败",
     retryable=False,
 )
+
+CHAT_INPUT_INVALID = AppErrorCode(
+    code="KNOWLEDGE_INGESTION_AGENT.CHAT_INPUT_INVALID",
+    http_status=400,
+    default_message="对话输入不合法",
+    retryable=False,
+)
+
+CHAT_AGENT_UNAVAILABLE = AppErrorCode(
+    code="KNOWLEDGE_INGESTION_AGENT.CHAT_AGENT_UNAVAILABLE",
+    http_status=503,
+    default_message="对话 Agent 不可用",
+    retryable=True,
+)
+
+CHAT_AGENT_FAILED = AppErrorCode(
+    code="KNOWLEDGE_INGESTION_AGENT.CHAT_AGENT_FAILED",
+    http_status=502,
+    default_message="对话 Agent 调用失败",
+    retryable=True,
+)

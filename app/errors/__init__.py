@@ -9,6 +9,9 @@ HTTP 响应。本包不负责执行具体业务，也不负责主动处理异常
 from .exceptions import (
     AppErrorCode,
     AppException,
+    CHAT_AGENT_FAILED,
+    CHAT_AGENT_UNAVAILABLE,
+    CHAT_INPUT_INVALID,
     KNOWLEDGE_DOCUMENT_LOAD_FAILED,
     KNOWLEDGE_RETRIEVAL_FAILED,
 )
@@ -16,6 +19,9 @@ from .exceptions import (
 __all__ = [
     "AppErrorCode",
     "AppException",
+    "CHAT_AGENT_FAILED",
+    "CHAT_AGENT_UNAVAILABLE",
+    "CHAT_INPUT_INVALID",
     "KNOWLEDGE_DOCUMENT_LOAD_FAILED",
     "KNOWLEDGE_RETRIEVAL_FAILED",
 ]
