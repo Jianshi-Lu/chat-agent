@@ -92,6 +92,13 @@ KNOWLEDGE_RETRIEVAL_FAILED = AppErrorCode(
     retryable=False,
 )
 
+KNOWLEDGE_INGESTION_FAILED = AppErrorCode(
+    code="KNOWLEDGE_INGESTION_AGENT.INGESTION_FAILED",
+    http_status=500,
+    default_message="知识文档入库失败",
+    retryable=False,
+)
+
 CHAT_INPUT_INVALID = AppErrorCode(
     code="KNOWLEDGE_INGESTION_AGENT.CHAT_INPUT_INVALID",
     http_status=400,
