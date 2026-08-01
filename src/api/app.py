@@ -1,7 +1,8 @@
 """定义本地知识问答 HTTP API 和 FastAPI 生命周期。
 
 本模块只负责 HTTP 边界：请求模型、路由、应用异常转换和 Runtime 生命周期。
-模型权重、内存 Chroma 和 RAG Chain 由 ``src.service.runtime.Runtime`` 持有，
+模型权重、持久化 Chroma、检索器和 LangChain Agent 由
+``src.service.runtime.Runtime`` 持有，
 不会在每个请求中重复初始化。
 """
 
@@ -13,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from configuration import get_server_settings
+from configuration import get_http_server_settings
 from src.errors import AppException, CHAT_AGENT_UNAVAILABLE, CHAT_INPUT_INVALID
 from src.service.runtime import Runtime
 
@@ -34,12 +35,12 @@ class ChatResponse(BaseModel):
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """在应用启动时创建 Runtime，在应用关闭时释放全部资源。"""
 
-    settings = get_server_settings()
-    runtime = Runtime(settings)
+    settings = get_http_server_settings()
+    runtime = Runtime()
     app.state.runtime = runtime
     app.state.ready = True
     print(
-        f"知识库初始化完成：{len(runtime.chunks)} 个文本块\n"
+        f"知识库初始化完成：{runtime.chunk_count} 个文本块\n"
         f"HTTP Server 已启动：http://{settings.host}:{settings.port}",
         flush=True,
     )
@@ -116,7 +117,7 @@ def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             message="知识问答 Runtime 尚未就绪",
         )
 
-    return ChatResponse(answer=runtime.ask(payload.question))
+    return ChatResponse(answer=runtime.answer(payload.question))
 
 
 __all__ = ["ChatRequest", "ChatResponse", "app", "lifespan"]

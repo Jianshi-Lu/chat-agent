@@ -1,7 +1,7 @@
 """定义本地 OpenAI-compatible 对话服务配置。
 
-配置直接写在本模块中，默认指向本机运行的 OpenAI-compatible 服务。本模块只
-保存模型客户端参数，不创建网络连接，也不保存对话历史。
+配置直接写在本模块中，默认指向本机运行的 OpenAI-compatible 服务。本模块保存
+HTTP、知识库、检索和模型客户端参数，不创建网络连接，也不保存对话历史。
 """
 
 from dataclasses import dataclass
@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True, slots=True)
-class ChatSettings:
+class ChatModelSettings:
     """承载本地对话模型的连接和生成参数。
 
     默认值对应本机端口 `8000` 上的 OpenAI-compatible 服务及用户提供的模型。
@@ -39,35 +39,66 @@ class ChatSettings:
 
 
 @dataclass(frozen=True, slots=True)
-class ServerSettings:
-    """承载本地 HTTP Server 和知识库初始化配置。"""
+class HttpServerSettings:
+    """承载本地 HTTP Server 的监听配置。"""
 
     host: str = "127.0.0.1"
     port: int = 8082
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeRuntimeSettings:
+    """承载知识库运行时所需的数据、模型和向量库路径。"""
+
     policies_path: Path = PROJECT_ROOT / "data" / "policies.json"
     embedding_model_path: Path = Path(
         "/Users/lujianshi/Desktop/models/embedding/Qwen:Qwen3-Embedding-8B"
     )
+    chroma_path: Path = PROJECT_ROOT / "data" / "chroma"
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalSettings:
+    """承载知识检索策略参数。"""
+
     top_k: int = 3
 
 
 @lru_cache(maxsize=1)
-def get_chat_settings() -> ChatSettings:
-    """返回进程内复用的对话服务配置实例。"""
+def get_chat_model_settings() -> ChatModelSettings:
+    """返回进程内复用的对话模型配置实例。"""
 
-    return ChatSettings()
+    return ChatModelSettings()
 
 
 @lru_cache(maxsize=1)
-def get_server_settings() -> ServerSettings:
+def get_http_server_settings() -> HttpServerSettings:
     """返回进程内复用的 HTTP Server 配置实例。"""
 
-    return ServerSettings()
+    return HttpServerSettings()
+
+
+@lru_cache(maxsize=1)
+def get_knowledge_runtime_settings() -> KnowledgeRuntimeSettings:
+    """返回进程内复用的知识库运行时配置实例。"""
+
+    return KnowledgeRuntimeSettings()
+
+
+@lru_cache(maxsize=1)
+def get_retrieval_settings() -> RetrievalSettings:
+    """返回进程内复用的检索配置实例。"""
+
+    return RetrievalSettings()
 
 
 __all__ = [
-    "ChatSettings",
-    "ServerSettings",
-    "get_chat_settings",
-    "get_server_settings",
+    "ChatModelSettings",
+    "HttpServerSettings",
+    "KnowledgeRuntimeSettings",
+    "RetrievalSettings",
+    "get_chat_model_settings",
+    "get_http_server_settings",
+    "get_knowledge_runtime_settings",
+    "get_retrieval_settings",
 ]

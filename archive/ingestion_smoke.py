@@ -21,7 +21,7 @@ def main() -> None:
         )
 
         print(f"分块数量：{len(chunks)}")
-        print(f"Chroma collection 数量：{service.collection.count()}")
+        print(f"Chroma collection 数量：{service.policy_chunk_collection.count()}")
         print("查询结果：")
         for rank, (document, metadata, distance) in enumerate(
             zip(

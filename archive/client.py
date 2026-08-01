@@ -9,7 +9,7 @@ OpenAI-compatible 服务。每次请求彼此独立，不维护上下文，也�
 
 from collections.abc import Iterator
 
-from src.agent.agent import LangChainChatAgent
+from src.service.agent.agent import LangChainChatAgent
 from src.errors import AppException, CHAT_AGENT_FAILED, CHAT_AGENT_UNAVAILABLE
 
 

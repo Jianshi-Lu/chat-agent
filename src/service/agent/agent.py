@@ -1,9 +1,8 @@
-"""实现基于 LangChain 官方 ``create_agent`` 的无状态本地对话 Agent。
+"""实现服务主链路使用的无状态 LangChain Agent。
 
-本模块使用 ``ChatOpenAI`` 连接本机 OMLX 服务，并把 ``src.agent.tools`` 中的工具
-交给 ``create_agent``。工具选择、工具执行、结果回传和最终回答由官方 Agent
-运行时编排；本模块每次只传入当前用户消息，不配置 ``checkpointer``，因此不保存
-跨请求上下文。
+Agent 复用 Runtime 已创建的 ``ChatOpenAI`` 客户端，并注册本包中的工具。
+每次调用只接收当前问题和本次检索得到的上下文，不配置 checkpointer，因而
+不会保存跨 HTTP 请求的对话历史。
 """
 
 from collections.abc import Iterator
@@ -13,48 +12,61 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 
-from configuration import ChatSettings, get_chat_settings
+from configuration import ChatModelSettings, get_chat_model_settings
 
 from .tools import exact_paragraph_search, semantic_search
 
 
 _MODEL_NODE = "model"
+_DEFAULT_SYSTEM_PROMPT = (
+    "你是政策资料问答助手。只能依据用户消息中提供的知识库上下文回答问题；"
+    "如果上下文不足以支持结论，必须明确说明知识库中没有足够信息，"
+    "不要凭空补充事实。已注册的工具当前可能返回占位结果，不能把占位结果"
+    "当作真实政策事实。回答尽量简洁，并在适合时指出资料来源。"
+)
 
 
 class LangChainChatAgent:
-    """通过 LangChain 官方 Agent 调用 OMLX 模型且不维护上下文。"""
+    """通过 LangChain 官方 Agent 处理单次无状态对话。"""
 
-    settings: ChatSettings
-    model: ChatOpenAI
-    agent: Runnable
+    settings: ChatModelSettings
+    chat_model: ChatOpenAI
+    runnable: Runnable
 
-    def __init__(self) -> None:
-        """创建模型适配器。
+    def __init__(
+        self,
+        chat_model: ChatOpenAI | None = None,
+        settings: ChatModelSettings | None = None,
+    ) -> None:
+        """创建 Agent，并可复用 Runtime 已创建的模型客户端。"""
 
-        配置从根路径的 ``configuration`` 包读取，模型和官方 Agent 都由本模块
-        按配置创建。
-        """
-
-        self.settings: ChatSettings = get_chat_settings()
-        self.model: ChatOpenAI = self._create_model(self.settings)
-        self.agent: Runnable = create_agent(
-            model=self.model,
+        self.settings = settings or get_chat_model_settings()
+        self.chat_model = chat_model or self._create_chat_model(self.settings)
+        self.runnable = create_agent(
+            model=self.chat_model,
             tools=[exact_paragraph_search, semantic_search],
-            system_prompt=self.settings.system_prompt,
+            system_prompt=self.settings.system_prompt or _DEFAULT_SYSTEM_PROMPT,
             name="local_chat_agent",
         )
 
-    def complete(self, message: str) -> str:
-        """使用官方 Agent 处理当前消息并一次性返回最终回答。"""
+    def complete(self, message: str, *, context: str = "") -> str:
+        """提交当前问题和上下文，并返回 Agent 的最终回答。"""
 
-        result = self.agent.invoke({"messages": self._build_messages(message)})
+        result = self.runnable.invoke(
+            {"messages": self._build_messages(message, context=context)}
+        )
         return self._result_text(result)
 
-    def stream_response(self, message: str) -> Iterator[str]:
-        """使用官方 Agent 流式返回最终回答文本片段。"""
+    def stream_response(
+        self,
+        message: str,
+        *,
+        context: str = "",
+    ) -> Iterator[str]:
+        """流式返回当前问题对应的回答文本片段。"""
 
-        for chunk in self.agent.stream(
-            {"messages": self._build_messages(message)},
+        for chunk in self.runnable.stream(
+            {"messages": self._build_messages(message, context=context)},
             stream_mode="messages",
             version="v2",
         ):
@@ -78,14 +90,19 @@ class LangChainChatAgent:
             if text:
                 yield text
 
-    def _build_messages(self, message: str) -> list[BaseMessage]:
-        """为单次 Agent 调用构造消息，不读取或修改历史状态。"""
+    @staticmethod
+    def _build_messages(message: str, *, context: str) -> list[BaseMessage]:
+        """把当前问题和本次检索上下文组成一条用户消息。"""
 
-        return [HumanMessage(content=message)]
+        if not context:
+            return [HumanMessage(content=message)]
+
+        content = f"知识库上下文：\n{context or '未提供上下文。'}\n\n当前问题：\n{message}"
+        return [HumanMessage(content=content)]
 
     @staticmethod
     def _result_text(result: object) -> str:
-        """从官方 Agent 的状态结果中提取最后一条消息文本。"""
+        """从 Agent 状态结果中提取最后一条模型消息文本。"""
 
         if not isinstance(result, dict):
             raise TypeError("Agent 返回结果必须是包含 messages 的字典")
@@ -142,8 +159,8 @@ class LangChainChatAgent:
         return ""
 
     @staticmethod
-    def _create_model(settings: ChatSettings) -> ChatOpenAI:
-        """按本地服务配置创建 ``ChatOpenAI`` 客户端。"""
+    def _create_chat_model(settings: ChatModelSettings) -> ChatOpenAI:
+        """按本地 OpenAI-compatible 服务配置创建模型客户端。"""
 
         return ChatOpenAI(
             model=settings.model_name,

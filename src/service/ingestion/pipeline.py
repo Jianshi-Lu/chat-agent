@@ -1,8 +1,9 @@
-"""实现从 ``data/policies.json`` 到内存 Chroma collection 的最小链路。
+"""实现从 ``data/policies.json`` 到持久化 Chroma collection 的最小链路。
 
 处理链路为：政策 JSON → 读取政策正文 → 文本分块 → Embedding 向量化 →
-写入当前进程内的 Chroma collection。Chroma 不使用持久化目录，因此每次
-启动服务都会重新加载和向量化数据，服务退出后由 ``close`` 释放内存。
+写入指定目录中的 Chroma collection。首次启动会执行向量化，后续由 Runtime
+检测已有 collection 并复用数据；服务退出时由 ``close`` 释放当前进程资源，
+不会删除磁盘上的向量数据。
 """
 
 import gc
@@ -24,6 +25,7 @@ DEFAULT_EMBEDDING_MODEL_PATH = Path(
 )
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_POLICIES_PATH = PROJECT_ROOT / "data" / "policies.json"
+DEFAULT_CHROMA_PATH = PROJECT_ROOT / "data" / "chroma"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,14 +38,15 @@ class TextChunk:
 
 
 class IngestionService:
-    """执行政策 JSON 分块、Embedding 和内存 Chroma 写入。"""
+    """执行政策 JSON 分块、Embedding 和持久化 Chroma 写入。"""
 
     def __init__(
         self,
         model_path: str | Path = DEFAULT_EMBEDDING_MODEL_PATH,
+        chroma_path: str | Path = DEFAULT_CHROMA_PATH,
         device: str | None = None,
     ) -> None:
-        """加载本地 Embedding 模型并创建临时 Chroma collection。"""
+        """加载本地 Embedding 模型并打开指定目录中的 Chroma collection。"""
         model_path = Path(model_path)
         if not model_path.is_dir():
             raise self._error(
@@ -76,7 +79,7 @@ class IngestionService:
         print(f"Embedding 推理设备：{device}", flush=True)
 
         try:
-            self.model = SentenceTransformer(
+            self.embedding_model = SentenceTransformer(
                 str(model_path),
                 device=device,
                 local_files_only=True,
@@ -88,15 +91,18 @@ class IngestionService:
             ) from exc
 
         try:
-            self.client = chromadb.Client()
-            self.collection = self.client.create_collection(
+            self.chroma_path = Path(chroma_path)
+            self.chroma_path.mkdir(parents=True, exist_ok=True)
+            self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
+            self.policy_chunk_collection = self.chroma_client.get_or_create_collection(
                 name="policy_chunks",
                 metadata={"hnsw:space": "cosine"},
             )
         except Exception as exc:
             raise self._error(
                 stage="initialize_vector_store",
-                message="内存 Chroma collection 创建失败",
+                message="持久化 Chroma collection 创建失败",
+                details={"chroma_path": str(chroma_path)},
             ) from exc
 
     def ingest(
@@ -106,7 +112,7 @@ class IngestionService:
         chunk_size: int = 300,
         chunk_overlap: int = 50,
     ) -> list[TextChunk]:
-        """读取政策 JSON，分块并写入当前进程内的 Chroma。"""
+        """读取政策 JSON，分块并写入指定目录中的 Chroma。"""
 
         file_path = Path(path)
         policies = self._read_policies(file_path)
@@ -147,7 +153,7 @@ class IngestionService:
             )
 
         try:
-            embeddings = self.model.encode(
+            embeddings = self.embedding_model.encode(
                 [chunk.text for chunk in chunks],
                 normalize_embeddings=True,
                 batch_size=4,
@@ -160,7 +166,7 @@ class IngestionService:
             ) from exc
 
         try:
-            self.collection.add(
+            self.policy_chunk_collection.add(
                 ids=[chunk.id for chunk in chunks],
                 documents=[chunk.text for chunk in chunks],
                 metadatas=[chunk.metadata for chunk in chunks],
@@ -169,31 +175,31 @@ class IngestionService:
         except Exception as exc:
             raise self._error(
                 stage="store_chunks",
-                message="文档向量写入内存 Chroma 失败",
+                message="文档向量写入持久化 Chroma 失败",
             ) from exc
         return chunks
 
     def close(self) -> None:
-        """释放内存 Chroma、Embedding 模型引用和设备缓存。"""
+        """释放 Chroma、Embedding 模型引用和设备缓存，但保留磁盘数据。"""
 
-        model = getattr(self, "model", None)
-        if model is not None:
+        embedding_model = getattr(self, "embedding_model", None)
+        if embedding_model is not None:
             try:
-                model.to("cpu")
+                embedding_model.to("cpu")
             except Exception:
                 pass
 
-        client = getattr(self, "client", None)
-        if client is not None:
+        chroma_client = getattr(self, "chroma_client", None)
+        if chroma_client is not None:
             try:
-                client.close()
-                client.clear_system_cache()
+                chroma_client.close()
+                chroma_client.clear_system_cache()
             except Exception:
                 pass
 
-        self.collection = None
-        self.client = None
-        self.model = None
+        self.policy_chunk_collection = None
+        self.chroma_client = None
+        self.embedding_model = None
         gc.collect()
         try:
             if torch.backends.mps.is_available():

@@ -5,8 +5,7 @@ from unittest.mock import Mock
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 
-from src.agent import LangChainChatAgent
-from archive.client import ChatClient
+from src.service.agent import LangChainChatAgent
 
 
 def build_agent(monkeypatch):
@@ -76,7 +75,7 @@ def build_agent(monkeypatch):
 
     agent.invoke.side_effect = invoke
     agent.stream.side_effect = stream
-    monkeypatch.setattr("src.agent.agent.create_agent", lambda **kwargs: agent)
+    monkeypatch.setattr("src.service.agent.agent.create_agent", lambda **kwargs: agent)
     return LangChainChatAgent(), calls
 
 
@@ -121,11 +120,3 @@ def test_agent_rejects_invalid_result(result: object) -> None:
 
     with pytest.raises((TypeError, ValueError)):
         LangChainChatAgent._result_text(result)
-
-
-def test_client_creates_default_langchain_agent() -> None:
-    """省略 Agent 时，ChatClient 应能根据配置构造本地模型客户端。"""
-
-    client = ChatClient()
-
-    assert isinstance(client._agent, LangChainChatAgent)

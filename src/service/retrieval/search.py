@@ -1,4 +1,4 @@
-"""实现基于 Embedding 和内存 Chroma 的最小向量检索器。"""
+"""实现基于 Embedding 和 Chroma 的最小向量检索器。"""
 
 from typing import Any
 
@@ -29,21 +29,21 @@ class VectorRetriever:
                 message="top_k 必须大于 0",
                 details={"top_k": top_k},
             )
-        if self.ingestion.collection.count() == 0:
+        if self.ingestion.policy_chunk_collection.count() == 0:
             raise self._error(
                 stage="query_collection",
-                message="内存 Chroma collection 尚未写入文档",
+                message="Chroma collection 尚未写入文档",
             )
 
         try:
-            query_embedding = self.ingestion.model.encode(
+            query_embedding = self.ingestion.embedding_model.encode(
                 query,
                 prompt_name="query",
                 normalize_embeddings=True,
                 batch_size=1,
                 show_progress_bar=False,
             )
-            return self.ingestion.collection.query(
+            return self.ingestion.policy_chunk_collection.query(
                 query_embeddings=[query_embedding.tolist()],
                 n_results=top_k,
                 include=["documents", "metadatas", "distances"],
@@ -51,7 +51,7 @@ class VectorRetriever:
         except Exception as exc:
             raise self._error(
                 stage="query_collection",
-                message="内存 Chroma 查询失败",
+                message="Chroma 查询失败",
             ) from exc
 
     @staticmethod
