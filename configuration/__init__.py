@@ -4,6 +4,16 @@
 不再把配置文件放在具体业务包内部。
 """
 
-from .config import ChatSettings, get_chat_settings
+from .config import (
+    ChatSettings,
+    ServerSettings,
+    get_chat_settings,
+    get_server_settings,
+)
 
-__all__ = ["ChatSettings", "get_chat_settings"]
+__all__ = [
+    "ChatSettings",
+    "ServerSettings",
+    "get_chat_settings",
+    "get_server_settings",
+]

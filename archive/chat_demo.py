@@ -1,11 +1,11 @@
-"""提供一个在终端中调用本地 OMLX Agent 的最小对话入口。"""
+"""已归档的无状态本地 OMLX Agent 终端对话入口。"""
 
-from app.errors import AppException
-from app.service.client import ChatClient
+from archive.client import ChatClient
+from src.errors import AppException
 
 
 def main() -> None:
-    """循环读取用户输入，并实时打印 Agent 回答。"""
+    """循环读取用户输入，并实时打印归档 Agent 的回答。"""
 
     try:
         client = ChatClient()
@@ -13,7 +13,7 @@ def main() -> None:
         print(f"对话客户端初始化失败：{exc}")
         return
 
-    print("已启动本地 OMLX 对话入口。输入 exit、quit 或 退出结束。")
+    print("已启动归档的本地 OMLX 对话入口。输入 exit、quit 或 退出结束。")
 
     while True:
         try:

@@ -1,7 +1,7 @@
 # 应用错误代码目录
 
 本目录与 Java 项目的 `AppErrorCode` 对齐。Python 代码按业务模块复用
-`app.errors.exceptions` 中的错误对象；`code` 字段作为跨服务稳定标识，不能
+`src.errors.exceptions` 中的错误对象；`code` 字段作为跨服务稳定标识，不能
 因为实现重构而复用或改变含义。具体失败逻辑通过异常的 `message`、`stage`
 和 `details` 描述，不为每个校验分支单独创建错误对象。
 
@@ -9,12 +9,12 @@
 
 | Python 错误对象 | 错误代码 | 出错模块 | 主要阶段 | HTTP 状态 | 是否可重试 |
 |---|---|---|---|---:|---|
-| `KNOWLEDGE_DOCUMENT_LOAD_FAILED` | `KNOWLEDGE_INGESTION_AGENT.DOCUMENT_LOAD_FAILED` | `app.archive.knowledge.loader` | 由 `stage` 和 `message` 说明 | 500 | 否 |
-| `KNOWLEDGE_RETRIEVAL_FAILED` | `KNOWLEDGE_INGESTION_AGENT.RETRIEVAL_FAILED` | `app.archive.retrieval` | 由 `stage` 和 `message` 说明 | 500 | 否 |
-| `KNOWLEDGE_INGESTION_FAILED` | `KNOWLEDGE_INGESTION_AGENT.INGESTION_FAILED` | `app.service.ingestion` | 由 `stage` 和 `message` 说明 | 500 | 否 |
+| `KNOWLEDGE_DOCUMENT_LOAD_FAILED` | `KNOWLEDGE_INGESTION_AGENT.DOCUMENT_LOAD_FAILED` | `archive.knowledge.loader` | 由 `stage` 和 `message` 说明 | 500 | 否 |
+| `KNOWLEDGE_RETRIEVAL_FAILED` | `KNOWLEDGE_INGESTION_AGENT.RETRIEVAL_FAILED` | `src.service.retrieval` | 由 `stage` 和 `message` 说明 | 500 | 否 |
+| `KNOWLEDGE_INGESTION_FAILED` | `KNOWLEDGE_INGESTION_AGENT.INGESTION_FAILED` | `src.service.ingestion` | 由 `stage` 和 `message` 说明 | 500 | 否 |
 | `CHAT_INPUT_INVALID` | `KNOWLEDGE_INGESTION_AGENT.CHAT_INPUT_INVALID` | 后续输入校验模块 | 由 `stage` 和 `message` 说明 | 400 | 否 |
-| `CHAT_AGENT_UNAVAILABLE` | `KNOWLEDGE_INGESTION_AGENT.CHAT_AGENT_UNAVAILABLE` | `app.service` | 由 `stage` 和 `message` 说明 | 503 | 是 |
-| `CHAT_AGENT_FAILED` | `KNOWLEDGE_INGESTION_AGENT.CHAT_AGENT_FAILED` | `app.service` | 由 `stage` 和 `message` 说明 | 502 | 是 |
+| `CHAT_AGENT_UNAVAILABLE` | `KNOWLEDGE_INGESTION_AGENT.CHAT_AGENT_UNAVAILABLE` | `src.service` | 由 `stage` 和 `message` 说明 | 503 | 是 |
+| `CHAT_AGENT_FAILED` | `KNOWLEDGE_INGESTION_AGENT.CHAT_AGENT_FAILED` | `src.service` | 由 `stage` 和 `message` 说明 | 502 | 是 |
 
 ## 维护规则
 

@@ -17,9 +17,9 @@ from dataclasses import dataclass
 import re
 import unicodedata
 
-from app.errors import AppException, KNOWLEDGE_RETRIEVAL_FAILED
-from app.archive.knowledge.schemas import PolicyDocument
-from app.archive.retrieval.schemas import RetrievedDocument
+from src.errors import AppException, KNOWLEDGE_RETRIEVAL_FAILED
+from archive.knowledge.schemas import PolicyDocument
+from archive.retrieval.schemas import RetrievedDocument
 
 from .terms import KEYWORD_GROUPS
 

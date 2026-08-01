@@ -6,7 +6,7 @@
 """
 
 # 以下目录只记录恢复检索开发时可能继续扩展的结构。
-# app/archive/retrieval/
+# archive/retrieval/
 # ├── __init__.py                 → 公共出口
 # ├── base.py                     → Retriever Protocol
 # ├── schemas.py                  → RetrievedDocument

@@ -5,7 +5,7 @@
 唯一性。归档 Loader 不属于聊天入口的运行依赖。
 """
 
-from app.archive.knowledge.loader import load_documents
+from archive.knowledge.loader import load_documents
 
 
 def test_load_default_documents() -> None:

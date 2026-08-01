@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.errors import (
+from src.errors import (
     AppException,
     KNOWLEDGE_DOCUMENT_LOAD_FAILED,
 )
@@ -27,7 +27,7 @@ from app.errors import (
 from .schemas import PolicyDocument
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICIES_PATH = PROJECT_ROOT / "data" / "policies.json"
 
 

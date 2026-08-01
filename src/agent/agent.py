@@ -1,6 +1,6 @@
 """实现基于 LangChain 官方 ``create_agent`` 的无状态本地对话 Agent。
 
-本模块使用 ``ChatOpenAI`` 连接本机 OMLX 服务，并把 ``app.agent.tools`` 中的工具
+本模块使用 ``ChatOpenAI`` 连接本机 OMLX 服务，并把 ``src.agent.tools`` 中的工具
 交给 ``create_agent``。工具选择、工具执行、结果回传和最终回答由官方 Agent
 运行时编排；本模块每次只传入当前用户消息，不配置 ``checkpointer``，因此不保存
 跨请求上下文。

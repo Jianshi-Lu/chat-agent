@@ -7,9 +7,9 @@
 
 import pytest
 
-from app.errors import AppException, KNOWLEDGE_RETRIEVAL_FAILED
-from app.archive.knowledge.loader import load_documents
-from app.archive.retrieval.keyword import KeywordRetriever
+from src.errors import AppException, KNOWLEDGE_RETRIEVAL_FAILED
+from archive.knowledge.loader import load_documents
+from archive.retrieval.keyword import KeywordRetriever
 
 
 @pytest.fixture

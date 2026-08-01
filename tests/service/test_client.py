@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from app.service.client import ChatClient
-from app.errors import AppException, CHAT_AGENT_FAILED
+from archive.client import ChatClient
+from src.errors import AppException, CHAT_AGENT_FAILED
 
 
 @dataclass
@@ -26,7 +26,7 @@ class FakeAgent:
 def build_client(monkeypatch, agent: object) -> ChatClient:
     """替换默认 Agent，测试 ChatClient 的入口行为。"""
 
-    monkeypatch.setattr("app.service.client.LangChainChatAgent", lambda: agent)
+    monkeypatch.setattr("archive.client.LangChainChatAgent", lambda: agent)
     return ChatClient()
 
 

@@ -6,6 +6,10 @@
 
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +38,19 @@ class ChatSettings:
     system_prompt: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ServerSettings:
+    """承载本地 HTTP Server 和知识库初始化配置。"""
+
+    host: str = "127.0.0.1"
+    port: int = 8082
+    policies_path: Path = PROJECT_ROOT / "data" / "policies.json"
+    embedding_model_path: Path = Path(
+        "/Users/lujianshi/Desktop/models/embedding/Qwen:Qwen3-Embedding-8B"
+    )
+    top_k: int = 3
+
+
 @lru_cache(maxsize=1)
 def get_chat_settings() -> ChatSettings:
     """返回进程内复用的对话服务配置实例。"""
@@ -41,4 +58,16 @@ def get_chat_settings() -> ChatSettings:
     return ChatSettings()
 
 
-__all__ = ["ChatSettings", "get_chat_settings"]
+@lru_cache(maxsize=1)
+def get_server_settings() -> ServerSettings:
+    """返回进程内复用的 HTTP Server 配置实例。"""
+
+    return ServerSettings()
+
+
+__all__ = [
+    "ChatSettings",
+    "ServerSettings",
+    "get_chat_settings",
+    "get_server_settings",
+]
