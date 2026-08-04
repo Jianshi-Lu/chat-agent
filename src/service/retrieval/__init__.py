@@ -1,5 +1,5 @@
-"""提供与知识入库流水线解耦的 Chroma 原始向量检索能力。"""
+"""预留知识检索领域扩展。
 
-from .retriever import Retriever
-
-__all__ = ["Retriever"]
+当前项目直接使用 ``Chroma.as_retriever`` 返回的官方
+``VectorStoreRetriever``，不在本包重复包装检索接口。
+"""

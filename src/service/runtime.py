@@ -8,24 +8,28 @@ Chroma、Agent、模型引用和设备缓存。
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from threading import Lock
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
+from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
+from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 
 from configuration import (
     ContextCompressionSettings,
-    KnowledgeRuntimeSettings,
+    DEFAULT_THREAD_ID,
+    IngestionSettings,
     RetrievalSettings,
     get_chat_model_settings,
     get_context_compression_settings,
-    get_knowledge_runtime_settings,
+    get_ingestion_settings,
     get_retrieval_settings,
 )
 
@@ -37,17 +41,7 @@ from src.errors import (
 )
 
 from .agent.tools import build_retriever_tool, exact_paragraph_search
-from .ingestion import IngestionService
-from .retrieval import Retriever
-
-
-_DEFAULT_SYSTEM_PROMPT = (
-    "你是政策资料问答助手。涉及政策事实、政策定义、政策要求或政策来源的问题，"
-    "必须优先调用 retrieve 获取知识库片段，再依据检索结果回答；"
-    "如果上下文不足以支持结论，必须明确说明知识库中没有足够信息，"
-    "不要凭空补充事实。已注册的工具可能包含占位实现，不能把占位结果"
-    "当作真实政策事实。回答尽量简洁，并在适合时指出资料来源。"
-)
+from .ingestion import IngestionPipeline, KnowledgeDocument
 
 
 class Runtime:
@@ -55,35 +49,39 @@ class Runtime:
 
     def __init__(
         self,
-        settings: KnowledgeRuntimeSettings | None = None,
+        settings: IngestionSettings | None = None,
         retrieval_settings: RetrievalSettings | None = None,
         context_compression_settings: ContextCompressionSettings | None = None,
     ) -> None:
         """加载 Embedding、持久化 Chroma、政策数据和带压缩能力的 Agent。"""
 
-        self.settings = settings or get_knowledge_runtime_settings()
+        self.settings = settings or get_ingestion_settings()
         self.retrieval_settings = retrieval_settings or get_retrieval_settings()
         self.context_compression_settings = (
             context_compression_settings or get_context_compression_settings()
         )
-        self.ingestion: IngestionService | None = None
-        self.retriever: Retriever | None = None
+        self.ingestion: IngestionPipeline | None = None
+        self.retriever: VectorStoreRetriever | None = None
         self.retriever_tool: BaseTool | None = None
         self.chat_model: ChatOpenAI | None = None
         self.agent: Runnable | None = None
         self.checkpointer: BaseCheckpointSaver | None = None
-        self.chunks: list[Any] = []
+        self.chunks: list[Document] = []
         self.chunk_count = 0
+        self._ingestion_lock = Lock()
 
         try:
             print("正在加载本地 Embedding 模型和持久化 Chroma...", flush=True)
-            self.ingestion = IngestionService(
+            self.ingestion = IngestionPipeline(
                 model_path=self.settings.embedding_model_path,
                 chroma_path=self.settings.chroma_path,
+                collection_name=self.settings.collection_name,
+                embedding_batch_size=self.settings.embedding_batch_size,
+                query_embedding_batch_size=self.settings.query_embedding_batch_size,
             )
-            self.retriever = Retriever(self.ingestion)
-
-            existing_chunk_count = self.ingestion.policy_chunk_collection.count()
+            existing_chunk_count = len(
+                self.ingestion.vector_store.get(include=[]).get("ids", [])
+            )
             if existing_chunk_count:
                 self.chunk_count = existing_chunk_count
                 print(
@@ -91,9 +89,21 @@ class Runtime:
                     flush=True,
                 )
             else:
-                print("正在读取 policies.json 并生成文档向量...", flush=True)
-                self.chunks = self.ingestion.ingest(self.settings.policies_path)
+                print(
+                    f"正在读取 {self.settings.source_path} 并生成文档向量...",
+                    flush=True,
+                )
+                self.chunks = self.ingestion.run(
+                    self.settings.source_path,
+                    chunk_size=self.settings.chunk_size,
+                    chunk_overlap=self.settings.chunk_overlap,
+                )
                 self.chunk_count = len(self.chunks)
+
+            self.retriever = self.ingestion.vector_store.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": self.retrieval_settings.top_k},
+            )
 
             print("正在初始化 LangChain Agent...", flush=True)
             chat_settings = get_chat_model_settings()
@@ -118,7 +128,6 @@ class Runtime:
                 self.checkpointer = InMemorySaver()
             self.retriever_tool = build_retriever_tool(
                 self.retriever,
-                top_k=self.retrieval_settings.top_k,
             )
             middleware: list[object] = []
             if self.context_compression_settings.enabled:
@@ -127,7 +136,7 @@ class Runtime:
                         self.context_compression_settings.summary_model_name
                         or chat_settings.model_name
                     ),
-                    temperature=0.0,
+                    temperature=self.context_compression_settings.summary_temperature,
                     max_completion_tokens=(
                         self.context_compression_settings.summary_max_tokens
                     ),
@@ -151,7 +160,7 @@ class Runtime:
                 tools=[exact_paragraph_search, self.retriever_tool],
                 middleware=middleware,
                 checkpointer=self.checkpointer,
-                system_prompt=chat_settings.system_prompt or _DEFAULT_SYSTEM_PROMPT,
+                system_prompt=chat_settings.system_prompt,
                 name="local_chat_agent",
             )
         except AppException:
@@ -167,8 +176,10 @@ class Runtime:
                 message="本地知识问答运行时初始化失败",
             ) from exc
 
-    def answer(self, question: str, *, thread_id: str = "default") -> str:
+    def answer(self, question: str, *, thread_id: str | None = None) -> str:
         """按 thread_id 处理问题，并由 checkpointer 管理短期对话历史。"""
+
+        thread_id = DEFAULT_THREAD_ID if thread_id is None else thread_id
 
         if not isinstance(question, str) or not question.strip():
             raise AppException(
@@ -216,6 +227,78 @@ class Runtime:
                 message="本地 Agent 返回了空回答",
             )
         return answer
+
+    def vectorize_documents(
+        self,
+        documents: Sequence[KnowledgeDocument],
+    ) -> list[tuple[str, int]]:
+        """在一次写锁内向量化多个知识文件，并在失败时按 UUID 补偿。"""
+
+        documents = list(documents)
+        if not documents:
+            raise AppException(
+                CHAT_INPUT_INVALID,
+                module="service.runtime",
+                operation="vectorize_documents",
+                stage="validate_input",
+                message="待向量化知识文件不能为空",
+            )
+        if self.ingestion is None:
+            raise AppException(
+                CHAT_AGENT_UNAVAILABLE,
+                module="service.runtime",
+                operation="vectorize_documents",
+                stage="validate_runtime",
+                message="知识向量化 Runtime 尚未初始化",
+            )
+
+        with self._ingestion_lock:
+            results: list[tuple[str, int]] = []
+            try:
+                for document in documents:
+                    chunks = self.ingestion.vectorize_document(
+                        document,
+                        chunk_size=self.settings.chunk_size,
+                        chunk_overlap=self.settings.chunk_overlap,
+                    )
+                    results.append((document.document_uuid, len(chunks)))
+            except Exception:
+                for document in documents:
+                    try:
+                        self.ingestion.delete_document(document.document_uuid)
+                    except AppException:
+                        pass
+                self._refresh_chunk_count()
+                raise
+
+            self._refresh_chunk_count()
+            return results
+
+    def delete_document(self, document_uuid: str) -> int:
+        """在写锁内幂等删除指定 document_uuid 的向量。"""
+
+        if self.ingestion is None:
+            raise AppException(
+                CHAT_AGENT_UNAVAILABLE,
+                module="service.runtime",
+                operation="delete_document",
+                stage="validate_runtime",
+                message="知识向量化 Runtime 尚未初始化",
+            )
+        with self._ingestion_lock:
+            deleted_count = self.ingestion.delete_document(document_uuid)
+            self._refresh_chunk_count()
+            return deleted_count
+
+    def _refresh_chunk_count(self) -> None:
+        """从当前 Chroma collection 刷新运行时 chunk 数量。"""
+
+        if self.ingestion is None:
+            self.chunk_count = 0
+            return
+        self.chunk_count = len(
+            self.ingestion.vector_store.get(include=[]).get("ids", [])
+        )
 
     @staticmethod
     def _result_text(result: object) -> str:

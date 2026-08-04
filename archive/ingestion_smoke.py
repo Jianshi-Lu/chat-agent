@@ -1,43 +1,46 @@
 """已归档的政策分块、向量入库和检索 smoke test。"""
 
-from pathlib import Path
-
-from src.service.ingestion import DEFAULT_POLICIES_PATH, IngestionService
-from src.service.retrieval import VectorRetriever
+from configuration import get_ingestion_settings, get_retrieval_settings
+from src.service.ingestion import IngestionPipeline
 
 
-DATA_PATH = DEFAULT_POLICIES_PATH
+INGESTION_SETTINGS = get_ingestion_settings()
+RETRIEVAL_SETTINGS = get_retrieval_settings()
 
 
 def main() -> None:
     """加载全部政策文档并打印内存向量库链路结果。"""
 
-    service = IngestionService()
+    pipeline = IngestionPipeline(
+        model_path=INGESTION_SETTINGS.embedding_model_path,
+        chroma_path=INGESTION_SETTINGS.chroma_path,
+        collection_name=INGESTION_SETTINGS.collection_name,
+        embedding_batch_size=INGESTION_SETTINGS.embedding_batch_size,
+        query_embedding_batch_size=INGESTION_SETTINGS.query_embedding_batch_size,
+    )
     try:
-        chunks = service.ingest(DATA_PATH)
-        results = VectorRetriever(service).retrieve(
-            "政府采购信息查询相关政策",
-            top_k=3,
+        chunks = pipeline.run(
+            INGESTION_SETTINGS.source_path,
+            chunk_size=INGESTION_SETTINGS.chunk_size,
+            chunk_overlap=INGESTION_SETTINGS.chunk_overlap,
         )
+        retriever = pipeline.vector_store.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": RETRIEVAL_SETTINGS.top_k},
+        )
+        results = retriever.invoke("政府采购信息查询相关政策")
 
         print(f"分块数量：{len(chunks)}")
-        print(f"Chroma collection 数量：{service.policy_chunk_collection.count()}")
+        collection_count = len(pipeline.vector_store.get(include=[])["ids"])
+        print(f"Chroma collection 数量：{collection_count}")
         print("查询结果：")
-        for rank, (document, metadata, distance) in enumerate(
-            zip(
-                results["documents"][0],
-                results["metadatas"][0],
-                results["distances"][0],
-            ),
-            start=1,
-        ):
+        for rank, document in enumerate(results, start=1):
             print(
-                f"{rank}. distance={distance:.6f} "
-                f"policy_id={metadata['policy_id']} "
-                f"text={document[:80]}"
+                f"{rank}. source={document.metadata['source']} "
+                f"text={document.page_content[:80]}"
             )
     finally:
-        service.close()
+        pipeline.close()
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 import src.service.runtime as runtime_module
 
-from configuration import ContextCompressionSettings, KnowledgeRuntimeSettings
+from configuration import ContextCompressionSettings, IngestionSettings
 from src.service.agent.tools import exact_paragraph_search
 from src.service.runtime import Runtime
 
@@ -22,21 +22,25 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
     retriever_tool = Mock()
     runnable = Mock()
 
-    class FakeCollection:
-        def count(self) -> int:
-            return 1
+    class FakeVectorStore:
+        def get(self, *, include: list[str]) -> dict[str, list[str]]:
+            assert include == []
+            return {"ids": ["chunk-1"]}
+
+        def as_retriever(self, **kwargs: object) -> Mock:
+            captured["retriever_kwargs"] = kwargs
+            return Mock()
 
     class FakeIngestion:
-        policy_chunk_collection = FakeCollection()
+        vector_store = FakeVectorStore()
 
         def __init__(self, **kwargs: object) -> None:
             pass
 
-        def close(self) -> None:
-            pass
+        def run(self, path: object, **kwargs: object) -> list[object]:
+            raise AssertionError("已有 Chroma 数据时不应执行入库任务")
 
-    class FakeRetriever:
-        def __init__(self, ingestion: FakeIngestion) -> None:
+        def close(self) -> None:
             pass
 
     class FakeChatModel:
@@ -47,18 +51,17 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
         captured.update(kwargs)
         return runnable
 
-    monkeypatch.setattr(runtime_module, "IngestionService", FakeIngestion)
-    monkeypatch.setattr(runtime_module, "Retriever", FakeRetriever)
+    monkeypatch.setattr(runtime_module, "IngestionPipeline", FakeIngestion)
     monkeypatch.setattr(
         runtime_module,
         "build_retriever_tool",
-        lambda retriever, top_k: retriever_tool,
+        lambda retriever: retriever_tool,
     )
     monkeypatch.setattr(runtime_module, "ChatOpenAI", FakeChatModel)
     monkeypatch.setattr(runtime_module, "create_agent", create_agent)
 
     runtime = Runtime(
-        settings=KnowledgeRuntimeSettings(),
+        settings=IngestionSettings(),
         context_compression_settings=ContextCompressionSettings(enabled=False),
     )
 
@@ -66,6 +69,10 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
     assert captured["tools"] == [exact_paragraph_search, retriever_tool]
     assert captured["middleware"] == []
     assert captured["checkpointer"] is None
+    assert captured["retriever_kwargs"] == {
+        "search_type": "similarity",
+        "search_kwargs": {"k": 3},
+    }
     runtime.close()
 
 

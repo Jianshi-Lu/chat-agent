@@ -2,7 +2,8 @@
 
 from fastapi.testclient import TestClient
 
-import src.api.app as http_app
+from configuration import DEFAULT_THREAD_ID
+import src.api.server as http_app
 
 
 class FakeRuntime:
@@ -13,13 +14,33 @@ class FakeRuntime:
         self.chunk_count = len(self.chunks)
         self.questions: list[str] = []
         self.closed = False
+        self.vectorized_document_uuids: list[str] = []
+        self.deleted_document_uuids: list[str] = []
 
-    def answer(self, question: str, *, thread_id: str = "default") -> str:
+    def answer(
+        self,
+        question: str,
+        *,
+        thread_id: str = DEFAULT_THREAD_ID,
+    ) -> str:
         self.questions.append(question)
         return f"回答：{question}"
 
     def close(self) -> None:
         self.closed = True
+
+    def vectorize_documents(self, documents):
+        self.vectorized_document_uuids.extend(
+            document.document_uuid for document in documents
+        )
+        return [
+            (document.document_uuid, 2)
+            for document in documents
+        ]
+
+    def delete_document(self, document_uuid: str) -> int:
+        self.deleted_document_uuids.append(document_uuid)
+        return 2
 
 
 def test_http_lifecycle_and_thread_id(monkeypatch) -> None:
@@ -61,3 +82,53 @@ def test_empty_question_returns_bad_request(monkeypatch) -> None:
 
     assert response.status_code == 400
     assert response.json()["code"] == "KNOWLEDGE_INGESTION_AGENT.CHAT_INPUT_INVALID"
+
+
+def test_vectorize_and_delete_knowledge_document(monkeypatch) -> None:
+    """HTTP 接口应把稳定知识文件交给 Runtime，并按 UUID 幂等删除。"""
+
+    runtimes: list[FakeRuntime] = []
+
+    def create_runtime() -> FakeRuntime:
+        runtime = FakeRuntime()
+        runtimes.append(runtime)
+        return runtime
+
+    monkeypatch.setattr(http_app, "Runtime", create_runtime)
+    document_uuid = "550e8400-e29b-41d4-a716-446655440000"
+    payload = {
+        "documents": [
+            {
+                "documentUuid": document_uuid,
+                "content": "# 测试知识\n\n唯一事实。",
+                "originalFilename": "knowledge.txt",
+                "originalObjectKey": f"{document_uuid}/original/knowledge.txt",
+                "convertedObjectKey": f"{document_uuid}/converted/content.md",
+                "originalSha256": "a" * 64,
+                "convertedSha256": "b" * 64,
+            }
+        ]
+    }
+
+    with TestClient(http_app.app) as client:
+        vectorize_response = client.post(
+            "/internal/knowledge-files/vectorize",
+            json=payload,
+        )
+        delete_response = client.delete(
+            f"/internal/knowledge-files/{document_uuid}"
+        )
+
+    assert vectorize_response.status_code == 200
+    assert vectorize_response.json() == {
+        "documents": [
+            {"documentUuid": document_uuid, "chunkCount": 2}
+        ]
+    }
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {
+        "documentUuid": document_uuid,
+        "deletedChunkCount": 2,
+    }
+    assert runtimes[0].vectorized_document_uuids == [document_uuid]
+    assert runtimes[0].deleted_document_uuids == [document_uuid]

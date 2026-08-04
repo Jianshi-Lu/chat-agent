@@ -7,25 +7,27 @@
 from .config import (
     ChatModelSettings,
     ContextCompressionSettings,
+    DEFAULT_THREAD_ID,
     HttpServerSettings,
-    KnowledgeRuntimeSettings,
+    IngestionSettings,
     RetrievalSettings,
     get_chat_model_settings,
     get_context_compression_settings,
     get_http_server_settings,
-    get_knowledge_runtime_settings,
+    get_ingestion_settings,
     get_retrieval_settings,
 )
 
 __all__ = [
     "ChatModelSettings",
     "ContextCompressionSettings",
+    "DEFAULT_THREAD_ID",
     "HttpServerSettings",
-    "KnowledgeRuntimeSettings",
+    "IngestionSettings",
     "RetrievalSettings",
     "get_chat_model_settings",
     "get_context_compression_settings",
     "get_http_server_settings",
-    "get_knowledge_runtime_settings",
+    "get_ingestion_settings",
     "get_retrieval_settings",
 ]

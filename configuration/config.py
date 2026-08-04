@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_THREAD_ID = "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +36,13 @@ class ChatModelSettings:
 
     timeout: float = 600.0
     max_retries: int = 0
-    system_prompt: str | None = None
+    system_prompt: str | None = (
+        "你是政策资料问答助手。涉及政策事实、政策定义、政策要求或政策来源的问题，"
+        "必须优先调用 retrieve 获取知识库片段，再依据检索结果回答；"
+        "如果上下文不足以支持结论，必须明确说明知识库中没有足够信息，"
+        "不要凭空补充事实。已注册的工具可能包含占位实现，不能把占位结果"
+        "当作真实政策事实。回答尽量简洁，并在适合时指出资料来源。"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +59,7 @@ class ContextCompressionSettings:
     trigger_tokens: int = 4_000
     keep_messages: int = 20
     summary_max_tokens: int = 4_096
+    summary_temperature: float = 0.0
 
     def __post_init__(self) -> None:
         """在 Agent 创建前拒绝无效的压缩参数。"""
@@ -73,14 +81,19 @@ class HttpServerSettings:
 
 
 @dataclass(frozen=True, slots=True)
-class KnowledgeRuntimeSettings:
-    """承载知识库运行时所需的数据、模型和向量库路径。"""
+class IngestionSettings:
+    """承载知识入库所需的数据、模型、向量库和处理参数。"""
 
-    policies_path: Path = PROJECT_ROOT / "data" / "policies.json"
+    source_path: Path = PROJECT_ROOT / "data" / "policies.json"
     embedding_model_path: Path = Path(
         "/Users/lujianshi/Desktop/models/embedding/Qwen:Qwen3-Embedding-8B"
     )
     chroma_path: Path = PROJECT_ROOT / "data" / "chroma"
+    collection_name: str = "knowledge_file_chunks"
+    chunk_size: int = 300
+    chunk_overlap: int = 50
+    embedding_batch_size: int = 4
+    query_embedding_batch_size: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,10 +125,10 @@ def get_http_server_settings() -> HttpServerSettings:
 
 
 @lru_cache(maxsize=1)
-def get_knowledge_runtime_settings() -> KnowledgeRuntimeSettings:
-    """返回进程内复用的知识库运行时配置实例。"""
+def get_ingestion_settings() -> IngestionSettings:
+    """返回进程内复用的知识入库配置实例。"""
 
-    return KnowledgeRuntimeSettings()
+    return IngestionSettings()
 
 
 @lru_cache(maxsize=1)
@@ -129,11 +142,12 @@ __all__ = [
     "ChatModelSettings",
     "ContextCompressionSettings",
     "HttpServerSettings",
-    "KnowledgeRuntimeSettings",
+    "IngestionSettings",
     "RetrievalSettings",
+    "DEFAULT_THREAD_ID",
     "get_chat_model_settings",
     "get_context_compression_settings",
     "get_http_server_settings",
-    "get_knowledge_runtime_settings",
+    "get_ingestion_settings",
     "get_retrieval_settings",
 ]
