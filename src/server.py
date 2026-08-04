@@ -1,6 +1,6 @@
-"""启动本地 HTTP Server。
+"""HTTP Server 启动入口。
 
-本模块只负责读取服务配置并启动 Uvicorn；HTTP 路由和 FastAPI 生命周期位于
+本模块只负责读取 HTTP 配置并启动 Uvicorn。FastAPI 应用和生命周期位于
 ``src.api.app``，模型、持久化 Chroma 和 LangChain Agent 由 Runtime 管理。
 """
 
@@ -25,3 +25,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+__all__ = ["main"]

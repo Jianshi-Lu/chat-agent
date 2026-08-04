@@ -1,108 +1,131 @@
-"""验证 LangChain 官方 Agent 的无状态调用和流式行为。"""
+"""验证 Runtime 直接创建和调用 LangChain 官方 Agent 的契约。"""
 
 from unittest.mock import Mock
 
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain.agents import create_agent as create_langchain_agent
+from langchain.agents.middleware import SummarizationMiddleware
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
+import src.service.runtime as runtime_module
 
-from src.service.agent import LangChainChatAgent
+from configuration import ContextCompressionSettings, KnowledgeRuntimeSettings
+from src.service.agent.tools import exact_paragraph_search
+from src.service.runtime import Runtime
 
 
-def build_agent(monkeypatch):
-    """替换官方 Agent 工厂，验证入口只传递当前消息。"""
+def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
+    """Runtime 直接读取配置并把参数传给官方 create_agent。"""
 
-    calls: list[list[BaseMessage]] = []
-    agent = Mock()
+    captured: dict[str, object] = {}
+    retriever_tool = Mock()
+    runnable = Mock()
 
-    def invoke(inputs: dict[str, list[BaseMessage]]) -> dict[str, list[BaseMessage]]:
-        messages = inputs["messages"]
-        calls.append(list(messages))
-        return {"messages": [*messages, AIMessage(content=f"回答{len(calls)}")]}
+    class FakeCollection:
+        def count(self) -> int:
+            return 1
 
-    def stream(
-        inputs: dict[str, list[BaseMessage]],
-        *,
-        stream_mode: str,
-        version: str,
-    ):
-        messages = inputs["messages"]
-        calls.append(list(messages))
-        return iter(
-            [
-                {
-                    "type": "messages",
-                    "data": (
-                        AIMessageChunk(content="工具节点文本"),
-                        {"langgraph_node": "tools"},
-                    ),
-                },
-                {
-                    "type": "messages",
-                    "data": (
-                        AIMessage(
-                            content="工具决策文本",
-                            tool_calls=[
-                                {
-                                    "name": "exact_paragraph_search",
-                                    "args": {
-                                        "chapter_no": 3,
-                                        "paragraph_no": 2,
-                                    },
-                                    "id": "call-1",
-                                    "type": "tool_call",
-                                }
-                            ],
-                        ),
-                        {"langgraph_node": "model"},
-                    ),
-                },
-                {
-                    "type": "messages",
-                    "data": (
-                        AIMessageChunk(content="流"),
-                        {"langgraph_node": "model"},
-                    ),
-                },
-                {
-                    "type": "messages",
-                    "data": (
-                        AIMessageChunk(content="式回答"),
-                        {"langgraph_node": "model"},
-                    ),
-                },
+    class FakeIngestion:
+        policy_chunk_collection = FakeCollection()
+
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeRetriever:
+        def __init__(self, ingestion: FakeIngestion) -> None:
+            pass
+
+    class FakeChatModel:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    def create_agent(**kwargs: object):
+        captured.update(kwargs)
+        return runnable
+
+    monkeypatch.setattr(runtime_module, "IngestionService", FakeIngestion)
+    monkeypatch.setattr(runtime_module, "Retriever", FakeRetriever)
+    monkeypatch.setattr(
+        runtime_module,
+        "build_retriever_tool",
+        lambda retriever, top_k: retriever_tool,
+    )
+    monkeypatch.setattr(runtime_module, "ChatOpenAI", FakeChatModel)
+    monkeypatch.setattr(runtime_module, "create_agent", create_agent)
+
+    runtime = Runtime(
+        settings=KnowledgeRuntimeSettings(),
+        context_compression_settings=ContextCompressionSettings(enabled=False),
+    )
+
+    assert runtime.agent is runnable
+    assert captured["tools"] == [exact_paragraph_search, retriever_tool]
+    assert captured["middleware"] == []
+    assert captured["checkpointer"] is None
+    runtime.close()
+
+
+def test_runtime_invokes_official_agent_with_thread_id() -> None:
+    """Runtime 直接调用官方 Agent，并把 thread_id 传给 checkpointer。"""
+
+    runnable = Mock()
+    runnable.invoke.return_value = {"messages": [AIMessage(content="回答")]}
+    runtime = Runtime.__new__(Runtime)
+    runtime.retriever = Mock()
+    runtime.retriever_tool = Mock()
+    runtime.agent = runnable
+    runtime.checkpointer = Mock()
+
+    assert runtime.answer("问题", thread_id="thread-1") == "回答"
+    assert runnable.invoke.call_args.kwargs["config"] == {
+        "configurable": {"thread_id": "thread-1"}
+    }
+    assert runnable.invoke.call_args.args[0]["messages"][0].content == "问题"
+
+
+def test_official_summarization_persists_compacted_state() -> None:
+    """官方 Middleware 应在模型调用前摘要旧消息并写回 Checkpoint。"""
+
+    summary_model = FakeMessagesListChatModel(
+        responses=[AIMessage(content="历史摘要")]
+    )
+    main_model = FakeMessagesListChatModel(
+        responses=[AIMessage(content="当前回答")]
+    )
+    checkpointer = InMemorySaver()
+    runnable = create_langchain_agent(
+        model=main_model,
+        middleware=[
+            SummarizationMiddleware(
+                model=summary_model,
+                trigger=("messages", 2),
+                keep=("messages", 1),
+            )
+        ],
+        checkpointer=checkpointer,
+    )
+    config = {"configurable": {"thread_id": "compression-test"}}
+
+    result = runnable.invoke(
+        {
+            "messages": [
+                HumanMessage(content="问题一"),
+                AIMessage(content="回答一"),
+                HumanMessage(content="问题二"),
             ]
-        )
+        },
+        config=config,
+    )
+    state = runnable.get_state(config)
+    state_messages = state.values["messages"]
 
-    agent.invoke.side_effect = invoke
-    agent.stream.side_effect = stream
-    monkeypatch.setattr("src.service.agent.agent.create_agent", lambda **kwargs: agent)
-    return LangChainChatAgent(), calls
-
-
-def test_agent_does_not_preserve_context(monkeypatch) -> None:
-    """同一 Agent 实例的每次调用都只能看到当前消息。"""
-
-    agent, calls = build_agent(monkeypatch)
-
-    assert agent.complete("第一问") == "回答1"
-    assert agent.complete("第二问") == "回答2"
-
-    assert [message.content for message in calls[0]] == ["第一问"]
-    assert [message.content for message in calls[1]] == ["第二问"]
-
-
-def test_agent_streams_without_saving_context(monkeypatch) -> None:
-    """流式片段应按顺序返回，后续调用不应包含上一轮内容。"""
-
-    agent, calls = build_agent(monkeypatch)
-
-    assert list(agent.stream_response("流式问题")) == [
-        "流",
-        "式回答",
-    ]
-    assert agent.complete("下一问") == "回答2"
-
-    assert [message.content for message in calls[1]] == ["下一问"]
+    assert result["messages"][-1].content == "当前回答"
+    assert any("历史摘要" in message.content for message in state_messages)
+    assert any(message.content == "问题二" for message in state_messages)
 
 
 @pytest.mark.parametrize(
@@ -111,12 +134,12 @@ def test_agent_streams_without_saving_context(monkeypatch) -> None:
         None,
         {},
         {"messages": []},
-        {"messages": [BaseMessage(content="不是模型回答", type="base")]},
+        {"messages": [HumanMessage(content="不是模型回答")]},
         {"messages": [AIMessage(content="")]},
     ],
 )
-def test_agent_rejects_invalid_result(result: object) -> None:
-    """非法 Agent 状态必须显式失败，不能静默返回空字符串。"""
+def test_runtime_rejects_invalid_agent_result(result: object) -> None:
+    """非法官方 Agent 状态必须显式失败，不能静默返回空字符串。"""
 
     with pytest.raises((TypeError, ValueError)):
-        LangChainChatAgent._result_text(result)
+        Runtime._result_text(result)

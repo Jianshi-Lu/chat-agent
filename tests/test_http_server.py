@@ -14,7 +14,7 @@ class FakeRuntime:
         self.questions: list[str] = []
         self.closed = False
 
-    def answer(self, question: str) -> str:
+    def answer(self, question: str, *, thread_id: str = "default") -> str:
         self.questions.append(question)
         return f"回答：{question}"
 
@@ -22,8 +22,8 @@ class FakeRuntime:
         self.closed = True
 
 
-def test_http_lifecycle_and_stateless_chat(monkeypatch) -> None:
-    """请求应复用启动阶段创建的 Runtime，且不传递历史上下文。"""
+def test_http_lifecycle_and_thread_id(monkeypatch) -> None:
+    """请求应复用启动阶段创建的 Runtime，并接受线程标识。"""
 
     runtimes: list[FakeRuntime] = []
 
@@ -39,7 +39,10 @@ def test_http_lifecycle_and_stateless_chat(monkeypatch) -> None:
         assert client.post("/chat", json={"question": "第一问"}).json() == {
             "answer": "回答：第一问"
         }
-        assert client.post("/chat", json={"question": "第二问"}).json() == {
+        assert client.post(
+            "/chat",
+            json={"question": "第二问", "thread_id": "thread-1"},
+        ).json() == {
             "answer": "回答：第二问"
         }
 

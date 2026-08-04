@@ -6,10 +6,12 @@
 
 from .config import (
     ChatModelSettings,
+    ContextCompressionSettings,
     HttpServerSettings,
     KnowledgeRuntimeSettings,
     RetrievalSettings,
     get_chat_model_settings,
+    get_context_compression_settings,
     get_http_server_settings,
     get_knowledge_runtime_settings,
     get_retrieval_settings,
@@ -17,10 +19,12 @@ from .config import (
 
 __all__ = [
     "ChatModelSettings",
+    "ContextCompressionSettings",
     "HttpServerSettings",
     "KnowledgeRuntimeSettings",
     "RetrievalSettings",
     "get_chat_model_settings",
+    "get_context_compression_settings",
     "get_http_server_settings",
     "get_knowledge_runtime_settings",
     "get_retrieval_settings",

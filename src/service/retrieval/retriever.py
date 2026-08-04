@@ -1,22 +1,25 @@
-"""实现基于 Embedding 和 Chroma 的最小向量检索器。"""
+"""实现基于 Embedding 和 Chroma 的原始向量检索。"""
 
-from typing import Any
+from chromadb.api.types import QueryResult
 
 from src.errors import AppException, KNOWLEDGE_RETRIEVAL_FAILED
 
 from ..ingestion import IngestionService
 
 
-class VectorRetriever:
-    """复用入库服务中的模型和 collection 执行相似度检索。"""
+class Retriever:
+    """复用入库服务中的模型和 collection 执行 Chroma 原始相似度检索。"""
 
-    def __init__(self, ingestion: IngestionService) -> None:
+    def __init__(
+        self,
+        ingestion: IngestionService,
+    ) -> None:
         """接收已经完成模型初始化的入库服务，不重复创建向量库。"""
 
         self.ingestion = ingestion
 
-    def retrieve(self, query: str, *, top_k: int = 3) -> dict[str, Any]:
-        """将问题向量化，并返回 Chroma 中最相关的文本片段。"""
+    def retrieve(self, query: str, *, top_k: int = 3) -> QueryResult:
+        """将问题向量化，并返回 Chroma 的原始查询结果。"""
 
         if not isinstance(query, str) or not query.strip():
             raise self._error(
@@ -43,11 +46,12 @@ class VectorRetriever:
                 batch_size=1,
                 show_progress_bar=False,
             )
-            return self.ingestion.policy_chunk_collection.query(
+            result = self.ingestion.policy_chunk_collection.query(
                 query_embeddings=[query_embedding.tolist()],
                 n_results=top_k,
                 include=["documents", "metadatas", "distances"],
             )
+            return result
         except Exception as exc:
             raise self._error(
                 stage="query_collection",
@@ -73,4 +77,4 @@ class VectorRetriever:
         )
 
 
-__all__ = ["VectorRetriever"]
+__all__ = ["Retriever"]

@@ -3,7 +3,7 @@
 调用方通过 ``ChatClient.complete`` 或 ``ChatClient.stream_response`` 提交一条
 用户消息；本模块将消息交给 ``LangChainChatAgent``，由它调用本地
 OpenAI-compatible 服务。每次请求彼此独立，不维护上下文，也不执行知识库
-检索或 RAG 编排。当前主流程使用 ``src.service.__main__``，本模块仅保留
+检索或 RAG 编排。当前主流程使用 ``src.server``，本模块仅保留
 早期通用聊天客户端实现。
 """
 

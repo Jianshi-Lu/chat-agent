@@ -1,7 +1,7 @@
 """定义本地 OpenAI-compatible 对话服务配置。
 
 配置直接写在本模块中，默认指向本机运行的 OpenAI-compatible 服务。本模块保存
-HTTP、知识库、检索和模型客户端参数，不创建网络连接，也不保存对话历史。
+HTTP、知识库、检索、模型客户端和上下文压缩参数，不创建网络连接。
 """
 
 from dataclasses import dataclass
@@ -39,6 +39,32 @@ class ChatModelSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextCompressionSettings:
+    """承载 LangChain 对话上下文压缩中间件参数。
+
+    ``trigger_tokens`` 当前使用便于本地验证的默认值，实际部署时应结合模型上下文窗口、
+    Tool schema 和输出预留空间调整。``summary_model_name`` 为空时复用主模型名称，
+    但仍会以独立的摘要客户端调用。
+    """
+
+    enabled: bool = True
+    summary_model_name: str | None = None
+    trigger_tokens: int = 4_000
+    keep_messages: int = 20
+    summary_max_tokens: int = 4_096
+
+    def __post_init__(self) -> None:
+        """在 Agent 创建前拒绝无效的压缩参数。"""
+
+        if self.trigger_tokens <= 0:
+            raise ValueError("trigger_tokens 必须大于 0")
+        if self.keep_messages <= 0:
+            raise ValueError("keep_messages 必须大于 0")
+        if self.summary_max_tokens <= 0:
+            raise ValueError("summary_max_tokens 必须大于 0")
+
+
+@dataclass(frozen=True, slots=True)
 class HttpServerSettings:
     """承载本地 HTTP Server 的监听配置。"""
 
@@ -72,6 +98,13 @@ def get_chat_model_settings() -> ChatModelSettings:
 
 
 @lru_cache(maxsize=1)
+def get_context_compression_settings() -> ContextCompressionSettings:
+    """返回进程内复用的上下文压缩配置实例。"""
+
+    return ContextCompressionSettings()
+
+
+@lru_cache(maxsize=1)
 def get_http_server_settings() -> HttpServerSettings:
     """返回进程内复用的 HTTP Server 配置实例。"""
 
@@ -94,10 +127,12 @@ def get_retrieval_settings() -> RetrievalSettings:
 
 __all__ = [
     "ChatModelSettings",
+    "ContextCompressionSettings",
     "HttpServerSettings",
     "KnowledgeRuntimeSettings",
     "RetrievalSettings",
     "get_chat_model_settings",
+    "get_context_compression_settings",
     "get_http_server_settings",
     "get_knowledge_runtime_settings",
     "get_retrieval_settings",

@@ -12,7 +12,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from configuration import get_http_server_settings
 from src.errors import AppException, CHAT_AGENT_UNAVAILABLE, CHAT_INPUT_INVALID
@@ -20,9 +20,20 @@ from src.service.runtime import Runtime
 
 
 class ChatRequest(BaseModel):
-    """承载一次无状态对话请求。"""
+    """承载一次带线程标识的对话请求。"""
 
     question: str = Field(min_length=1)
+    thread_id: str = Field(default="default", min_length=1, max_length=128)
+
+    @field_validator("thread_id")
+    @classmethod
+    def normalize_thread_id(cls, value: str) -> str:
+        """拒绝空白线程标识，并统一去除首尾空格。"""
+
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("thread_id 不能为空")
+        return normalized
 
 
 class ChatResponse(BaseModel):
@@ -105,7 +116,7 @@ def health(request: Request) -> dict[str, str]:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: Request, payload: ChatRequest) -> ChatResponse:
-    """使用当前问题执行一次独立的检索增强问答。"""
+    """按 thread_id 执行一次可恢复上下文的检索增强问答。"""
 
     runtime: Runtime | None = getattr(request.app.state, "runtime", None)
     if runtime is None or not getattr(request.app.state, "ready", False):
@@ -117,7 +128,9 @@ def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             message="知识问答 Runtime 尚未就绪",
         )
 
-    return ChatResponse(answer=runtime.answer(payload.question))
+    return ChatResponse(
+        answer=runtime.answer(payload.question, thread_id=payload.thread_id)
+    )
 
 
 __all__ = ["ChatRequest", "ChatResponse", "app", "lifespan"]
