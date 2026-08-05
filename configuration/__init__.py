@@ -6,11 +6,13 @@
 
 from .config import (
     ChatModelSettings,
+    CheckpointSettings,
     ContextCompressionSettings,
     HttpServerSettings,
     IngestionSettings,
     RetrievalSettings,
     get_chat_model_settings,
+    get_checkpoint_settings,
     get_context_compression_settings,
     get_http_server_settings,
     get_ingestion_settings,
@@ -19,11 +21,13 @@ from .config import (
 
 __all__ = [
     "ChatModelSettings",
+    "CheckpointSettings",
     "ContextCompressionSettings",
     "HttpServerSettings",
     "IngestionSettings",
     "RetrievalSettings",
     "get_chat_model_settings",
+    "get_checkpoint_settings",
     "get_context_compression_settings",
     "get_http_server_settings",
     "get_ingestion_settings",

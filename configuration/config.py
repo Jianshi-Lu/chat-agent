@@ -6,6 +6,7 @@ HTTP、知识库、检索、模型客户端和上下文压缩参数，不创建�
 
 from dataclasses import dataclass
 from functools import lru_cache
+import os
 from pathlib import Path
 
 
@@ -74,6 +75,23 @@ class ContextCompressionSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckpointSettings:
+    """承载 LangGraph Checkpointer 的 MySQL 连接配置。
+
+    ``database_url`` 使用 ``mysql://user:password@host:port/database`` 格式，
+    默认指向本地开发用的虚拟机独立库；也可用环境变量
+    ``CHAT_AGENT_CHECKPOINT_DATABASE_URL`` 覆盖。该库必须与业务库 ``chat_agent``
+    分离，避免 Checkpointer 表与业务表混用。Checkpointer 持久化始终开启，
+    不提供关闭开关。
+    """
+
+    database_url: str | None = (
+        "mysql://chat_agent_checkpoint:ChatAgentCkpt_2026!"
+        "@10.0.0.100:3306/chat_agent_checkpoint"
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class HttpServerSettings:
     """承载本地 HTTP Server 的监听配置。"""
 
@@ -119,6 +137,18 @@ def get_context_compression_settings() -> ContextCompressionSettings:
 
 
 @lru_cache(maxsize=1)
+def get_checkpoint_settings() -> CheckpointSettings:
+    """返回进程内复用的 Checkpointer 配置实例。"""
+
+    return CheckpointSettings(
+        database_url=(
+            os.environ.get("CHAT_AGENT_CHECKPOINT_DATABASE_URL")
+            or CheckpointSettings().database_url
+        ),
+    )
+
+
+@lru_cache(maxsize=1)
 def get_http_server_settings() -> HttpServerSettings:
     """返回进程内复用的 HTTP Server 配置实例。"""
 
@@ -141,11 +171,13 @@ def get_retrieval_settings() -> RetrievalSettings:
 
 __all__ = [
     "ChatModelSettings",
+    "CheckpointSettings",
     "ContextCompressionSettings",
     "HttpServerSettings",
     "IngestionSettings",
     "RetrievalSettings",
     "get_chat_model_settings",
+    "get_checkpoint_settings",
     "get_context_compression_settings",
     "get_http_server_settings",
     "get_ingestion_settings",
