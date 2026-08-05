@@ -10,7 +10,6 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_THREAD_ID = "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +145,6 @@ __all__ = [
     "HttpServerSettings",
     "IngestionSettings",
     "RetrievalSettings",
-    "DEFAULT_THREAD_ID",
     "get_chat_model_settings",
     "get_context_compression_settings",
     "get_http_server_settings",

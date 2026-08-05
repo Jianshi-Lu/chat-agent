@@ -10,7 +10,6 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-from configuration import DEFAULT_THREAD_ID
 from src.errors import AppException
 from src.service.runtime import Runtime
 
@@ -31,8 +30,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--thread-id",
-        default=DEFAULT_THREAD_ID,
-        help=f"对话线程标识，默认使用 {DEFAULT_THREAD_ID}。",
+        required=True,
+        help="对话线程标识；必须显式提供，不能使用隐式默认线程。",
     )
     return parser
 

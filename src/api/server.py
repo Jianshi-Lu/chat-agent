@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from configuration import DEFAULT_THREAD_ID, get_http_server_settings
+from configuration import get_http_server_settings
 from src.errors import AppException, CHAT_AGENT_UNAVAILABLE, CHAT_INPUT_INVALID
 from src.service.ingestion import KnowledgeDocument
 from src.service.runtime import Runtime
@@ -26,7 +26,7 @@ class ChatRequest(BaseModel):
     """承载一次带线程标识的对话请求。"""
 
     question: str = Field(min_length=1)
-    thread_id: str = Field(default=DEFAULT_THREAD_ID, min_length=1, max_length=128)
+    thread_id: str = Field(min_length=1, max_length=128)
 
     @field_validator("thread_id")
     @classmethod

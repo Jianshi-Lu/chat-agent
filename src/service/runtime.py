@@ -8,7 +8,9 @@ Chroma、Agent、模型引用和设备缓存。
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
+from pprint import pformat
 from threading import Lock
 
 from langchain.agents import create_agent
@@ -22,7 +24,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from configuration import (
     ContextCompressionSettings,
-    DEFAULT_THREAD_ID,
     IngestionSettings,
     RetrievalSettings,
     get_chat_model_settings,
@@ -40,6 +41,20 @@ from src.errors import (
 
 from .agent.tools import RetrievalToolContext, exact_paragraph_search, retrieve
 from .ingestion import IngestionPipeline, KnowledgeDocument
+
+
+_STATE_TRACE_ENV = "CHAT_AGENT_TRACE_STATE"
+
+
+def _state_trace_enabled() -> bool:
+    """读取是否在终端输出本次 Agent 调用的完整 State。"""
+
+    return os.environ.get(_STATE_TRACE_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class Runtime:
@@ -66,6 +81,7 @@ class Runtime:
         self.chunks: list[Document] = []
         self.chunk_count = 0
         self._ingestion_lock = Lock()
+        self._trace_state = _state_trace_enabled()
 
         try:
             print("正在加载本地 Embedding 模型和持久化 Chroma...", flush=True)
@@ -172,10 +188,8 @@ class Runtime:
                 message="本地知识问答运行时初始化失败",
             ) from exc
 
-    def answer(self, question: str, *, thread_id: str | None = None) -> str:
+    def answer(self, question: str, *, thread_id: str) -> str:
         """按 thread_id 处理问题，并由 checkpointer 管理短期对话历史。"""
-
-        thread_id = DEFAULT_THREAD_ID if thread_id is None else thread_id
 
         if not isinstance(question, str) or not question.strip():
             raise AppException(
@@ -195,15 +209,30 @@ class Runtime:
             )
 
         try:
+            config = (
+                self._thread_config(thread_id)
+                if self.checkpointer is not None
+                else None
+            )
             invoke_kwargs: dict[str, object] = {
                 "context": self.retrieval_context,
             }
-            if self.checkpointer is not None:
-                invoke_kwargs["config"] = self._thread_config(thread_id)
+            if config is not None:
+                invoke_kwargs["config"] = config
             result = self.agent.invoke(
                 {"messages": [HumanMessage(content=question)]},
                 **invoke_kwargs,
             )
+            # 单测或外部注入的轻量 Runtime 可能绕过 __init__，此时默认关闭调试输出。
+            if getattr(self, "_trace_state", False):
+                self._print_state(f"result, thread_id={thread_id}", result)
+                if config is not None:
+                    get_state = getattr(self.agent, "get_state", None)
+                    if callable(get_state):
+                        self._print_state(
+                            f"checkpoint, thread_id={thread_id}",
+                            get_state(config),
+                        )
             answer = self._result_text(result)
         except AppException:
             raise
@@ -225,6 +254,17 @@ class Runtime:
                 message="本地 Agent 返回了空回答",
             )
         return answer
+
+    @staticmethod
+    def _print_state(label: str, state: object) -> None:
+        """以完整可读形式输出 Agent State；仅由显式 trace 开关触发。"""
+
+        print(
+            f"\n===== Agent State ({label}) =====\n"
+            f"{pformat(state, width=120, sort_dicts=False)}\n"
+            "===== End Agent State =====",
+            flush=True,
+        )
 
     def vectorize_documents(
         self,

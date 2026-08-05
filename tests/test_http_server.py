@@ -2,7 +2,6 @@
 
 from fastapi.testclient import TestClient
 
-from configuration import DEFAULT_THREAD_ID
 import src.api.server as http_app
 
 
@@ -13,6 +12,7 @@ class FakeRuntime:
         self.chunks = ["chunk-1", "chunk-2"]
         self.chunk_count = len(self.chunks)
         self.questions: list[str] = []
+        self.thread_ids: list[str] = []
         self.closed = False
         self.vectorized_document_uuids: list[str] = []
         self.deleted_document_uuids: list[str] = []
@@ -21,9 +21,10 @@ class FakeRuntime:
         self,
         question: str,
         *,
-        thread_id: str = DEFAULT_THREAD_ID,
+        thread_id: str,
     ) -> str:
         self.questions.append(question)
+        self.thread_ids.append(thread_id)
         return f"回答：{question}"
 
     def close(self) -> None:
@@ -57,7 +58,10 @@ def test_http_lifecycle_and_thread_id(monkeypatch) -> None:
 
     with TestClient(http_app.app) as client:
         assert client.get("/health").json() == {"status": "ready"}
-        assert client.post("/chat", json={"question": "第一问"}).json() == {
+        assert client.post(
+            "/chat",
+            json={"question": "第一问", "thread_id": "thread-0"},
+        ).json() == {
             "answer": "回答：第一问"
         }
         assert client.post(
@@ -69,7 +73,20 @@ def test_http_lifecycle_and_thread_id(monkeypatch) -> None:
 
     assert len(runtimes) == 1
     assert runtimes[0].questions == ["第一问", "第二问"]
+    assert runtimes[0].thread_ids == ["thread-0", "thread-1"]
     assert runtimes[0].closed is True
+
+
+def test_missing_thread_id_returns_bad_request(monkeypatch) -> None:
+    """缺少 thread_id 时不能回退到 default。"""
+
+    monkeypatch.setattr(http_app, "Runtime", FakeRuntime)
+
+    with TestClient(http_app.app) as client:
+        response = client.post("/chat", json={"question": "问题"})
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "KNOWLEDGE_INGESTION_AGENT.CHAT_INPUT_INVALID"
 
 
 def test_empty_question_returns_bad_request(monkeypatch) -> None:

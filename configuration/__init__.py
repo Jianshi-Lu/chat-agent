@@ -7,7 +7,6 @@
 from .config import (
     ChatModelSettings,
     ContextCompressionSettings,
-    DEFAULT_THREAD_ID,
     HttpServerSettings,
     IngestionSettings,
     RetrievalSettings,
@@ -21,7 +20,6 @@ from .config import (
 __all__ = [
     "ChatModelSettings",
     "ContextCompressionSettings",
-    "DEFAULT_THREAD_ID",
     "HttpServerSettings",
     "IngestionSettings",
     "RetrievalSettings",
