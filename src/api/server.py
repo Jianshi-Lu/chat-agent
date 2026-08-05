@@ -40,9 +40,10 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """承载一次对话生成的回答。"""
+    """承载一次对话生成的回答；``title`` 仅在首轮自动生成后返回。"""
 
     answer: str
+    title: str | None = None
 
 
 class VectorizeDocumentRequest(BaseModel):
@@ -194,9 +195,11 @@ def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             message="知识问答 Runtime 尚未就绪",
         )
 
-    return ChatResponse(
-        answer=runtime.answer(payload.question, thread_id=payload.thread_id)
+    answer, title = runtime.answer_with_title(
+        payload.question,
+        thread_id=payload.thread_id,
     )
+    return ChatResponse(answer=answer, title=title)
 
 
 @app.post(

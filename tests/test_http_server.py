@@ -27,6 +27,14 @@ class FakeRuntime:
         self.thread_ids.append(thread_id)
         return f"回答：{question}"
 
+    def answer_with_title(
+        self,
+        question: str,
+        *,
+        thread_id: str,
+    ) -> tuple[str, str | None]:
+        return self.answer(question, thread_id=thread_id), None
+
     def close(self) -> None:
         self.closed = True
 
@@ -62,13 +70,15 @@ def test_http_lifecycle_and_thread_id(monkeypatch) -> None:
             "/chat",
             json={"question": "第一问", "thread_id": "thread-0"},
         ).json() == {
-            "answer": "回答：第一问"
+            "answer": "回答：第一问",
+            "title": None,
         }
         assert client.post(
             "/chat",
             json={"question": "第二问", "thread_id": "thread-1"},
         ).json() == {
-            "answer": "回答：第二问"
+            "answer": "回答：第二问",
+            "title": None,
         }
 
     assert len(runtimes) == 1

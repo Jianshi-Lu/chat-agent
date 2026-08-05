@@ -15,9 +15,15 @@ import uuid
 import pymysql
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.mysql.pymysql import PyMySQLSaver
+
+from src.service.agent.middlewares.title_generator import (
+    ChatTitleState,
+    ConversationTitleGenerator,
+)
 
 
 DATABASE_URL = os.environ.get("CHAT_AGENT_CHECKPOINT_DATABASE_URL", "")
@@ -188,4 +194,173 @@ def test_other_thread_state_is_fully_isolated() -> None:
     finally:
         saver.delete_thread(thread_a)
         saver.delete_thread(thread_b)
+        conn.close()
+
+
+def test_title_state_persists_across_restart() -> None:
+    """自定义标题通道应随 Checkpointer 跨进程持久化，重启后不再生成。"""
+
+    thread_id = f"title-restart-{uuid.uuid4()}"
+    script = f"""
+import os
+import pymysql
+from langchain.agents import create_agent
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.mysql.pymysql import PyMySQLSaver
+from src.service.agent.middlewares.title_generator import (
+    ChatTitleState,
+    ConversationTitleGenerator,
+)
+
+class SubprocessTitleModel:
+    def invoke(self, prompt):
+        return AIMessage(content="子进程标题")
+
+url = os.environ["CHAT_AGENT_CHECKPOINT_DATABASE_URL"]
+conn = pymysql.connect(**PyMySQLSaver.parse_conn_string(url), autocommit=True)
+saver = PyMySQLSaver(conn)
+saver.setup()
+agent = create_agent(
+    model=FakeMessagesListChatModel(responses=[AIMessage(content="进程一回答")]),
+    middleware=[ConversationTitleGenerator(model=SubprocessTitleModel())],
+    checkpointer=saver,
+    state_schema=ChatTitleState,
+)
+agent.invoke(
+    {{"messages": [HumanMessage(content="进程一问题")]}},
+    config={{"configurable": {{"thread_id": {thread_id!r}}}}},
+)
+conn.close()
+print("subprocess-title-ok")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={
+            **os.environ,
+            "CHAT_AGENT_CHECKPOINT_DATABASE_URL": DATABASE_URL,
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "subprocess-title-ok" in result.stdout
+
+    class ParentTitleModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, prompt: str) -> AIMessage:
+            self.calls += 1
+            return AIMessage(content="不应被调用")
+
+    title_model = ParentTitleModel()
+    saver, conn = _make_checkpointer()
+    try:
+        agent = create_agent(
+            model=FakeMessagesListChatModel(
+                responses=[AIMessage(content="进程二回答")]
+            ),
+            middleware=[ConversationTitleGenerator(model=title_model)],
+            checkpointer=saver,
+            state_schema=ChatTitleState,
+        )
+        config = {"configurable": {"thread_id": thread_id}}
+        agent.invoke(
+            {"messages": [HumanMessage(content="进程二问题")]},
+            config=config,
+        )
+
+        assert title_model.calls == 0
+        state = agent.get_state(config)
+        assert state.values["generated_title"] == "子进程标题"
+        assert state.values["title_attempted"] is True
+    finally:
+        saver.delete_thread(thread_id)
+        conn.close()
+
+
+def test_summarization_persists_across_restart() -> None:
+    """SummarizationMiddleware 生成的摘要应随 Checkpointer 跨进程持久化。"""
+
+    thread_id = f"summarization-restart-{uuid.uuid4()}"
+    script = f"""
+import os
+import pymysql
+from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.mysql.pymysql import PyMySQLSaver
+
+url = os.environ["CHAT_AGENT_CHECKPOINT_DATABASE_URL"]
+conn = pymysql.connect(**PyMySQLSaver.parse_conn_string(url), autocommit=True)
+saver = PyMySQLSaver(conn)
+saver.setup()
+agent = create_agent(
+    model=FakeMessagesListChatModel(
+        responses=[AIMessage(content="回答一"), AIMessage(content="回答二")]
+    ),
+    middleware=[
+        SummarizationMiddleware(
+            model=FakeMessagesListChatModel(
+                responses=[AIMessage(content="子进程摘要")]
+            ),
+            trigger=("messages", 3),
+            keep=("messages", 1),
+        )
+    ],
+    checkpointer=saver,
+)
+config = {{"configurable": {{"thread_id": {thread_id!r}}}}}
+agent.invoke({{"messages": [HumanMessage(content="问题一")]}}, config=config)
+agent.invoke({{"messages": [HumanMessage(content="问题二")]}}, config=config)
+state = agent.get_state(config)
+print("subprocess-contents=" + repr(
+    [getattr(m, "content", "") for m in state.values["messages"]]
+))
+conn.close()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={
+            **os.environ,
+            "CHAT_AGENT_CHECKPOINT_DATABASE_URL": DATABASE_URL,
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "子进程摘要" in result.stdout
+
+    saver, conn = _make_checkpointer()
+    try:
+        agent = create_agent(
+            model=FakeMessagesListChatModel(
+                responses=[AIMessage(content="回答三")]
+            ),
+            middleware=[
+                SummarizationMiddleware(
+                    # trigger 阈值设大，父进程不应再次压缩
+                    model=FakeMessagesListChatModel(
+                        responses=[AIMessage(content="父进程摘要")]
+                    ),
+                    trigger=("messages", 100),
+                    keep=("messages", 1),
+                )
+            ],
+            checkpointer=saver,
+        )
+        config = {"configurable": {"thread_id": thread_id}}
+        agent.invoke(
+            {"messages": [HumanMessage(content="问题三")]},
+            config=config,
+        )
+
+        contents = _message_texts(agent.get_state(config))
+        assert any("子进程摘要" in content for content in contents)
+        assert "问题三" in contents
+        assert "回答三" in contents
+    finally:
+        saver.delete_thread(thread_id)
         conn.close()

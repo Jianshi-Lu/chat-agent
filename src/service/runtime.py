@@ -16,7 +16,6 @@ from threading import Lock
 import pymysql
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
-from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
@@ -43,6 +42,7 @@ from src.errors import (
 )
 
 from .agent.tools import RetrievalToolContext, exact_paragraph_search, retrieve
+from .agent.middlewares.title_generator import ChatTitleState, ConversationTitleGenerator
 from .ingestion import IngestionPipeline, KnowledgeDocument
 
 
@@ -83,8 +83,8 @@ class Runtime:
         self.chat_model: ChatOpenAI | None = None
         self.agent: Runnable | None = None
         self.checkpointer: BaseCheckpointSaver | None = None
-        self._checkpoint_connection: object | None = None
-        self.chunks: list[Document] = []
+        self._checkpoint_connection: pymysql.Connection | None = None
+        self.title_generator: ConversationTitleGenerator | None = None
         self.chunk_count = 0
         self._ingestion_lock = Lock()
         self._trace_state = _state_trace_enabled()
@@ -112,12 +112,13 @@ class Runtime:
                     f"正在读取 {self.settings.source_path} 并生成文档向量...",
                     flush=True,
                 )
-                self.chunks = self.ingestion.run(
-                    self.settings.source_path,
-                    chunk_size=self.settings.chunk_size,
-                    chunk_overlap=self.settings.chunk_overlap,
+                self.chunk_count = len(
+                    self.ingestion.run(
+                        self.settings.source_path,
+                        chunk_size=self.settings.chunk_size,
+                        chunk_overlap=self.settings.chunk_overlap,
+                    )
                 )
-                self.chunk_count = len(self.chunks)
 
             self.retrieval_context = RetrievalToolContext(
                 vector_store=self.ingestion.vector_store,
@@ -159,36 +160,42 @@ class Runtime:
             # 初始化checkpointer, 对应saver为PyMySQLSaver（第三方实现）
             self.checkpointer = PyMySQLSaver(self._checkpoint_connection)
             self.checkpointer.setup()
-            middleware: list[object] = []
-            if self.context_compression_settings.enabled:
+            self.title_generator = ConversationTitleGenerator(model=self.chat_model)
+            summary_model = self.chat_model
+            if (
+                self.context_compression_settings.enabled
+                and self.context_compression_settings.summary_model_name
+            ):
                 summary_model = ChatOpenAI(
-                    model=(
-                        self.context_compression_settings.summary_model_name
-                        or chat_settings.model_name
-                    ),
+                    model=self.context_compression_settings.summary_model_name,
                     temperature=self.context_compression_settings.summary_temperature,
                     max_completion_tokens=(
                         self.context_compression_settings.summary_max_tokens
                     ),
                     **common_model_kwargs,
                 )
-                middleware.append(
-                    SummarizationMiddleware(
-                        model=summary_model,
-                        trigger=(
-                            "tokens",
-                            self.context_compression_settings.trigger_tokens,
-                        ),
-                        keep=(
-                            "messages",
-                            self.context_compression_settings.keep_messages,
-                        ),
-                    )
-                )
             self.agent = create_agent(
                 model=self.chat_model,
                 tools=[exact_paragraph_search, retrieve],
-                middleware=middleware,
+                middleware=(
+                    [
+                        self.title_generator,
+                        SummarizationMiddleware(
+                            model=summary_model,
+                            trigger=(
+                                "tokens",
+                                self.context_compression_settings.trigger_tokens,
+                            ),
+                            keep=(
+                                "messages",
+                                self.context_compression_settings.keep_messages,
+                            ),
+                        ),
+                    ]
+                    if self.context_compression_settings.enabled
+                    else [self.title_generator]
+                ),
+                state_schema=ChatTitleState,
                 context_schema=RetrievalToolContext,
                 checkpointer=self.checkpointer,
                 system_prompt=chat_settings.system_prompt,
@@ -208,6 +215,26 @@ class Runtime:
             ) from exc
 
     def answer(self, question: str, *, thread_id: str) -> str:
+        """按 thread_id 处理问题，返回回答文本。"""
+
+        return self._answer(question, thread_id=thread_id)[0]
+
+    def answer_with_title(
+        self,
+        question: str,
+        *,
+        thread_id: str,
+    ) -> tuple[str, str | None]:
+        """按 thread_id 处理问题，返回回答文本和本轮新生成的会话标题。"""
+
+        return self._answer(question, thread_id=thread_id)
+
+    def _answer(
+        self,
+        question: str,
+        *,
+        thread_id: str,
+    ) -> tuple[str, str | None]:
         """按 thread_id 处理问题，并由 checkpointer 管理短期对话历史。"""
 
         if not isinstance(question, str) or not question.strip():
@@ -228,16 +255,11 @@ class Runtime:
             )
 
         try:
-            config = (
-                self._thread_config(thread_id)
-                if self.checkpointer is not None
-                else None
-            )
+            config = self._thread_config(thread_id)
             invoke_kwargs: dict[str, object] = {
                 "context": self.retrieval_context,
+                "config": config,
             }
-            if config is not None:
-                invoke_kwargs["config"] = config
             result = self.agent.invoke(
                 {"messages": [HumanMessage(content=question)]},
                 **invoke_kwargs,
@@ -245,14 +267,18 @@ class Runtime:
             # 单测或外部注入的轻量 Runtime 可能绕过 __init__，此时默认关闭调试输出。
             if getattr(self, "_trace_state", False):
                 self._print_state(f"result, thread_id={thread_id}", result)
-                if config is not None:
-                    get_state = getattr(self.agent, "get_state", None)
-                    if callable(get_state):
-                        self._print_state(
-                            f"checkpoint, thread_id={thread_id}",
-                            get_state(config),
-                        )
+                get_state = getattr(self.agent, "get_state", None)
+                if callable(get_state):
+                    self._print_state(
+                        f"checkpoint, thread_id={thread_id}",
+                        get_state(config),
+                    )
             answer = self._result_text(result)
+            title: str | None = None
+            if isinstance(result, dict) and result.get("title_generated"):
+                generated = result.get("generated_title")
+                if isinstance(generated, str) and generated.strip():
+                    title = generated.strip()
         except AppException:
             raise
         except Exception as exc:
@@ -272,7 +298,7 @@ class Runtime:
                 stage="validate_response",
                 message="本地 Agent 返回了空回答",
             )
-        return answer
+        return answer, title
 
     @staticmethod
     def _print_state(label: str, state: object) -> None:
@@ -410,12 +436,12 @@ class Runtime:
         checkpoint_connection = self._checkpoint_connection
         self._checkpoint_connection = None
         self.checkpointer = None
+        self.title_generator = None
         ingestion = self.ingestion
         self.ingestion = None
         self.retrieval_context = None
         self.agent = None
         self.chat_model = None
-        self.chunks = []
         self.chunk_count = 0
 
         if checkpoint_connection is not None:

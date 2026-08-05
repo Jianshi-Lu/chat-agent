@@ -21,6 +21,7 @@ from src.service.agent.tools import (
     exact_paragraph_search,
     retrieve,
 )
+from src.service.agent.middlewares.title_generator import ChatTitleState, ConversationTitleGenerator
 from src.service.runtime import Runtime
 
 
@@ -98,7 +99,9 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
     assert runtime.agent is runnable
     assert captured["tools"] == [exact_paragraph_search, retrieve]
     assert captured["context_schema"] is RetrievalToolContext
-    assert captured["middleware"] == []
+    assert captured["state_schema"] is ChatTitleState
+    assert captured["middleware"] == [runtime.title_generator]
+    assert isinstance(runtime.title_generator, ConversationTitleGenerator)
     assert captured["checkpointer"] is runtime.checkpointer
     assert isinstance(runtime.checkpointer, FakePyMySQLSaver)
     assert runtime.checkpointer.setup_called is True
@@ -111,6 +114,7 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
     runtime.close()
     assert runtime.checkpointer is None
     assert runtime._checkpoint_connection is None
+    assert runtime.title_generator is None
     assert fake_conn.closed is True
 
 
@@ -171,6 +175,38 @@ def test_runtime_invokes_official_agent_with_thread_id() -> None:
     assert isinstance(context, RetrievalToolContext)
     assert context is runtime.retrieval_context
     assert runnable.invoke.call_args.args[0]["messages"][0].content == "问题"
+
+
+def test_runtime_answer_with_title_returns_generated_title() -> None:
+    """answer_with_title 只在本轮真正生成了标题时返回标题。"""
+
+    runnable = Mock()
+    runnable.invoke.return_value = {
+        "messages": [AIMessage(content="回答")],
+        "generated_title": "测试标题",
+        "title_generated": True,
+    }
+    runtime = Runtime.__new__(Runtime)
+    runtime.retrieval_context = RetrievalToolContext(
+        vector_store=Mock(),
+        embeddings=Mock(),
+        top_k=3,
+    )
+    runtime.agent = runnable
+    runtime.checkpointer = Mock()
+
+    answer, title = runtime.answer_with_title("问题", thread_id="thread-1")
+    assert answer == "回答"
+    assert title == "测试标题"
+
+    runnable.invoke.return_value = {
+        "messages": [AIMessage(content="回答")],
+        "generated_title": "测试标题",
+        "title_generated": False,
+    }
+    answer, title = runtime.answer_with_title("问题", thread_id="thread-1")
+    assert answer == "回答"
+    assert title is None
 
 
 def test_official_summarization_persists_compacted_state() -> None:

@@ -18,7 +18,6 @@ class ChatModelSettings:
     """承载本地对话模型的连接和生成参数。
 
     默认值对应本机端口 `8000` 上的 OpenAI-compatible 服务及用户提供的模型。
-    ``context_window`` 是服务端上下文窗口记录，不会作为普通采样参数发送；
     ``max_tokens``、``temperature`` 和 ``top_p`` 通过 ``ChatOpenAI`` 传给服务，
     ``top_k`` 与 ``repetition_penalty`` 通过 ``extra_body`` 传递给兼容服务。
     """
@@ -27,7 +26,6 @@ class ChatModelSettings:
     api_key: str = "20020228"
     model_name: str = "Qwen3.6-35B-A3B-Claude-4.7-Opus-Reasoning-Distilled-MLX-oQ4-MTP"
 
-    context_window: int = 262_144
     max_tokens: int = 131_072
     temperature: float = 0.5
     top_p: float = 0.95
@@ -52,8 +50,9 @@ class ContextCompressionSettings:
     """承载 LangChain 对话上下文压缩中间件参数。
 
     ``trigger_tokens`` 当前使用便于本地验证的默认值，实际部署时应结合模型上下文窗口、
-    Tool schema 和输出预留空间调整。``summary_model_name`` 为空时复用主模型名称，
-    但仍会以独立的摘要客户端调用。
+    Tool schema 和输出预留空间调整。``summary_model_name`` 为空时直接复用当前对话
+    模型客户端；配置了独立模型名时，才创建独立摘要客户端并使用
+    ``summary_temperature`` / ``summary_max_tokens``。
     """
 
     enabled: bool = True
