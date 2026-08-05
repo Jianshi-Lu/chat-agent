@@ -8,10 +8,8 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
-from src.service.ingestion.embedding import (
-    BatchHuggingFaceEmbeddings,
-    MpsEmbeddingExecutor,
-)
+from src.service.agent.mps_queue import MpsQueueEmbeddings
+from src.service.ingestion.embedding import BatchHuggingFaceEmbeddings
 
 
 class FakeSentenceTransformer:
@@ -94,7 +92,7 @@ class RecordingEmbedder:
         self.close_thread_id = get_ident()
 
 
-def test_mps_executor_uses_one_thread_for_create_calls_and_close() -> None:
+def test_mps_queue_embeddings_uses_one_thread_for_create_calls_and_close() -> None:
     """并发调用方只能向队列提交任务，不能并发进入模型。"""
 
     created: dict[str, object] = {}
@@ -105,7 +103,7 @@ def test_mps_executor_uses_one_thread_for_create_calls_and_close() -> None:
         created["delegate"] = delegate
         return cast(Any, delegate)
 
-    embeddings = MpsEmbeddingExecutor(factory)
+    embeddings = MpsQueueEmbeddings(factory)
     with ThreadPoolExecutor(max_workers=6) as callers:
         results = list(callers.map(embeddings.embed_query, [f"问题{i}" for i in range(12)]))
     document_vectors = embeddings.embed_documents(["文档一", "文档二"])

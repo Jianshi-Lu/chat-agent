@@ -7,7 +7,7 @@ from langchain_core.documents import Document
 
 from src.errors import AppException, KNOWLEDGE_INGESTION_FAILED
 
-from .embedding import EmbeddingRuntime, create_embedders
+from .embedding import EmbeddingRuntime, create_model
 from .models import KnowledgeDocument
 from .parser import parse_documents
 from .persistence import (
@@ -33,7 +33,7 @@ class IngestionPipeline:
     ) -> None:
         """创建 Embeddings 和 Chroma；不在初始化时读取或写入源文件。"""
 
-        self.embeddings: EmbeddingRuntime = create_embedders(
+        self.embeddings: EmbeddingRuntime = create_model(
             model_path,
             device=device,
             embedding_batch_size=embedding_batch_size,

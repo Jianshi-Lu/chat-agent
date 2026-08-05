@@ -16,7 +16,6 @@ from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import Runnable
-from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -39,9 +38,8 @@ from src.errors import (
     CHAT_INPUT_INVALID,
 )
 
-from .agent.tools import build_retriever_tool, exact_paragraph_search
+from .agent.tools import RetrievalToolContext, exact_paragraph_search, retrieve
 from .ingestion import IngestionPipeline, KnowledgeDocument
-from .retrieval import BatchRetriever
 
 
 class Runtime:
@@ -61,8 +59,7 @@ class Runtime:
             context_compression_settings or get_context_compression_settings()
         )
         self.ingestion: IngestionPipeline | None = None
-        self.retriever: BatchRetriever | None = None
-        self.retriever_tool: BaseTool | None = None
+        self.retrieval_context: RetrievalToolContext | None = None
         self.chat_model: ChatOpenAI | None = None
         self.agent: Runnable | None = None
         self.checkpointer: BaseCheckpointSaver | None = None
@@ -100,7 +97,7 @@ class Runtime:
                 )
                 self.chunk_count = len(self.chunks)
 
-            self.retriever = BatchRetriever(
+            self.retrieval_context = RetrievalToolContext(
                 vector_store=self.ingestion.vector_store,
                 embeddings=self.ingestion.embeddings,
                 top_k=self.retrieval_settings.top_k,
@@ -127,9 +124,6 @@ class Runtime:
             )
             if self.context_compression_settings.enabled:
                 self.checkpointer = InMemorySaver()
-            self.retriever_tool = build_retriever_tool(
-                self.retriever,
-            )
             middleware: list[object] = []
             if self.context_compression_settings.enabled:
                 summary_model = ChatOpenAI(
@@ -158,8 +152,9 @@ class Runtime:
                 )
             self.agent = create_agent(
                 model=self.chat_model,
-                tools=[exact_paragraph_search, self.retriever_tool],
+                tools=[exact_paragraph_search, retrieve],
                 middleware=middleware,
+                context_schema=RetrievalToolContext,
                 checkpointer=self.checkpointer,
                 system_prompt=chat_settings.system_prompt,
                 name="local_chat_agent",
@@ -190,7 +185,7 @@ class Runtime:
                 stage="validate_input",
                 message="问题不能为空",
             )
-        if self.retriever is None or self.retriever_tool is None or self.agent is None:
+        if self.retrieval_context is None or self.agent is None:
             raise AppException(
                 CHAT_AGENT_UNAVAILABLE,
                 module="service.runtime",
@@ -200,7 +195,9 @@ class Runtime:
             )
 
         try:
-            invoke_kwargs: dict[str, object] = {}
+            invoke_kwargs: dict[str, object] = {
+                "context": self.retrieval_context,
+            }
             if self.checkpointer is not None:
                 invoke_kwargs["config"] = self._thread_config(thread_id)
             result = self.agent.invoke(
@@ -353,8 +350,7 @@ class Runtime:
 
         ingestion = self.ingestion
         self.ingestion = None
-        self.retriever = None
-        self.retriever_tool = None
+        self.retrieval_context = None
         self.agent = None
         self.checkpointer = None
         self.chat_model = None

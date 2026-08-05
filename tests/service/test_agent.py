@@ -11,7 +11,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 import src.service.runtime as runtime_module
 
 from configuration import ContextCompressionSettings, IngestionSettings
-from src.service.agent.tools import exact_paragraph_search
+from src.service.agent.tools import (
+    RetrievalToolContext,
+    exact_paragraph_search,
+    retrieve,
+)
 from src.service.runtime import Runtime
 
 
@@ -19,7 +23,6 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
     """Runtime 直接读取配置并把参数传给官方 create_agent。"""
 
     captured: dict[str, object] = {}
-    retriever_tool = Mock()
     runnable = Mock()
 
     class FakeVectorStore:
@@ -47,11 +50,6 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
         return runnable
 
     monkeypatch.setattr(runtime_module, "IngestionPipeline", FakeIngestion)
-    def build_tool(retriever: object) -> Mock:
-        captured["retriever"] = retriever
-        return retriever_tool
-
-    monkeypatch.setattr(runtime_module, "build_retriever_tool", build_tool)
     monkeypatch.setattr(runtime_module, "ChatOpenAI", FakeChatModel)
     monkeypatch.setattr(runtime_module, "create_agent", create_agent)
 
@@ -61,15 +59,15 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
     )
 
     assert runtime.agent is runnable
-    assert captured["tools"] == [exact_paragraph_search, retriever_tool]
+    assert captured["tools"] == [exact_paragraph_search, retrieve]
+    assert captured["context_schema"] is RetrievalToolContext
     assert captured["middleware"] == []
     assert captured["checkpointer"] is None
-    assert captured["retriever"] is runtime.retriever
-    assert runtime.retriever is not None
+    assert runtime.retrieval_context is not None
     assert runtime.ingestion is not None
-    assert runtime.retriever.vector_store is runtime.ingestion.vector_store
-    assert runtime.retriever.embeddings is runtime.ingestion.embeddings
-    assert runtime.retriever.top_k == 3
+    assert runtime.retrieval_context.vector_store is runtime.ingestion.vector_store
+    assert runtime.retrieval_context.embeddings is runtime.ingestion.embeddings
+    assert runtime.retrieval_context.top_k == 3
     runtime.close()
 
 
@@ -79,8 +77,11 @@ def test_runtime_invokes_official_agent_with_thread_id() -> None:
     runnable = Mock()
     runnable.invoke.return_value = {"messages": [AIMessage(content="回答")]}
     runtime = Runtime.__new__(Runtime)
-    runtime.retriever = Mock()
-    runtime.retriever_tool = Mock()
+    runtime.retrieval_context = RetrievalToolContext(
+        vector_store=Mock(),
+        embeddings=Mock(),
+        top_k=3,
+    )
     runtime.agent = runnable
     runtime.checkpointer = Mock()
 
@@ -88,6 +89,9 @@ def test_runtime_invokes_official_agent_with_thread_id() -> None:
     assert runnable.invoke.call_args.kwargs["config"] == {
         "configurable": {"thread_id": "thread-1"}
     }
+    context = runnable.invoke.call_args.kwargs["context"]
+    assert isinstance(context, RetrievalToolContext)
+    assert context is runtime.retrieval_context
     assert runnable.invoke.call_args.args[0]["messages"][0].content == "问题"
 
 

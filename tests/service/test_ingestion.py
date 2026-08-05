@@ -79,7 +79,7 @@ def test_pipeline_only_assembles_components(monkeypatch) -> None:
 
     monkeypatch.setattr(
         pipeline_module,
-        "create_embedders",
+        "create_model",
         lambda model_path, device=None, embedding_batch_size=None, query_embedding_batch_size=None: embeddings,
     )
     monkeypatch.setattr(
@@ -126,7 +126,7 @@ def test_vectorize_document_uses_stable_uuid_and_object_metadata(monkeypatch) ->
 
     monkeypatch.setattr(
         pipeline_module,
-        "create_embedders",
+        "create_model",
         lambda model_path, device=None, embedding_batch_size=None, query_embedding_batch_size=None: embeddings,
     )
     monkeypatch.setattr(

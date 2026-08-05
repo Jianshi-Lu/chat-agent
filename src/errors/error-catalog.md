@@ -10,7 +10,7 @@
 | Python 错误对象 | 错误代码 | 出错模块 | 主要阶段 | HTTP 状态 | 是否可重试 |
 |---|---|---|---|---:|---|
 | `KNOWLEDGE_DOCUMENT_LOAD_FAILED` | `KNOWLEDGE_INGESTION_AGENT.DOCUMENT_LOAD_FAILED` | `service.ingestion.parser` | 由 `stage` 和 `message` 说明 | 500 | 否 |
-| `KNOWLEDGE_RETRIEVAL_FAILED` | `KNOWLEDGE_INGESTION_AGENT.RETRIEVAL_FAILED` | `src.service.retrieval` | 由 `stage` 和 `message` 说明 | 500 | 否 |
+| `KNOWLEDGE_RETRIEVAL_FAILED` | `KNOWLEDGE_INGESTION_AGENT.RETRIEVAL_FAILED` | `src.service.agent.tools.retrieve` | 由 `stage` 和 `message` 说明 | 500 | 否 |
 | `KNOWLEDGE_INGESTION_FAILED` | `KNOWLEDGE_INGESTION_AGENT.INGESTION_FAILED` | `src.service.ingestion` | 由 `stage` 和 `message` 说明 | 500 | 否 |
 | `CHAT_INPUT_INVALID` | `KNOWLEDGE_INGESTION_AGENT.CHAT_INPUT_INVALID` | 后续输入校验模块 | 由 `stage` 和 `message` 说明 | 400 | 否 |
 | `CHAT_AGENT_UNAVAILABLE` | `KNOWLEDGE_INGESTION_AGENT.CHAT_AGENT_UNAVAILABLE` | `src.service` | 由 `stage` 和 `message` 说明 | 503 | 是 |

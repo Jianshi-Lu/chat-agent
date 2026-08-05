@@ -1,13 +1,15 @@
-"""创建线程安全的本地 LangChain Embeddings 运行时。"""
+"""创建线程安全的本地 LangChain Embeddings 运行时。
+
+``create_model`` 是本项目对外暴露的动态路由工厂：普通设备直接返回
+``BatchHuggingFaceEmbeddings``，MPS 则返回 ``MpsQueueEmbeddings``。
+后者实现与普通 Embeddings 相同的调用接口，只额外增加 MPS 单线程排队能力。
+"""
 
 from __future__ import annotations
 
 import gc
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Lock, get_ident
-from typing import Any, cast
 
 import torch
 from langchain_core.embeddings import Embeddings
@@ -15,6 +17,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 from configuration import get_ingestion_settings
 from src.errors import AppException, KNOWLEDGE_INGESTION_FAILED
+from src.service.agent.mps_queue import MpsQueueEmbeddings
 
 
 class BatchHuggingFaceEmbeddings(HuggingFaceEmbeddings):
@@ -60,113 +63,26 @@ class BatchHuggingFaceEmbeddings(HuggingFaceEmbeddings):
             pass
 
 
-class MpsEmbeddingExecutor(Embeddings):
-    """把共享 MPS 模型的全部操作排队到唯一固定工作线程。"""
-
-    def __init__(
-        self,
-        factory: Callable[[], BatchHuggingFaceEmbeddings],
-    ) -> None:
-        self._executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="mps-embedding",
-        )
-        self._lifecycle_lock = Lock()
-        self._closed = False
-        self._delegate: BatchHuggingFaceEmbeddings | None = None
-        self._worker_thread_id: int | None = None
-
-        try:
-            self._delegate, self._worker_thread_id = self._executor.submit(
-                self._create_delegate,
-                factory,
-            ).result()
-        except BaseException:
-            self._closed = True
-            self._executor.shutdown(wait=True, cancel_futures=True)
-            raise
-
-        print(
-            f"MPS Embedding 固定执行线程已就绪：{self._worker_thread_id}",
-            flush=True,
-        )
-
-    @staticmethod
-    def _create_delegate(
-        factory: Callable[[], BatchHuggingFaceEmbeddings],
-    ) -> tuple[BatchHuggingFaceEmbeddings, int]:
-        """在最终承接推理的同一线程中创建模型实例。"""
-
-        return factory(), get_ident()
-
-    @property
-    def worker_thread_id(self) -> int | None:
-        """返回固定 MPS 工作线程 ID，供日志与回归测试确认线程亲和性。"""
-
-        return self._worker_thread_id
-
-    def _invoke(self, method_name: str, *args: object) -> Any:
-        delegate = self._delegate
-        if delegate is None:
-            raise RuntimeError("MPS Embedding 执行器已经关闭")
-        return getattr(delegate, method_name)(*args)
-
-    def _submit(self, method_name: str, *args: object) -> Any:
-        """原子检查生命周期并把一次模型操作加入单工作线程队列。"""
-
-        with self._lifecycle_lock:
-            if self._closed:
-                raise RuntimeError("MPS Embedding 执行器已经关闭")
-            future = self._executor.submit(self._invoke, method_name, *args)
-        return future.result()
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """串行执行文档批量编码。"""
-
-        return cast(list[list[float]], self._submit("embed_documents", texts))
-
-    def embed_query(self, text: str) -> list[float]:
-        """串行执行单查询编码。"""
-
-        return cast(list[float], self._submit("embed_query", text))
-
-    def embed_queries(self, texts: list[str]) -> list[list[float]]:
-        """串行执行一次多查询批量编码。"""
-
-        return cast(list[list[float]], self._submit("embed_queries", texts))
-
-    def _close_delegate(self) -> None:
-        delegate = self._delegate
-        if delegate is not None:
-            delegate.close()
-        self._delegate = None
-
-    def close(self) -> None:
-        """等待已排队任务完成，再在固定线程释放模型并停止工作线程。"""
-
-        with self._lifecycle_lock:
-            if self._closed:
-                return
-            self._closed = True
-            future = self._executor.submit(self._close_delegate)
-
-        try:
-            future.result()
-        finally:
-            self._executor.shutdown(wait=True, cancel_futures=False)
+# 类型上，两个类都是 Embeddings 的具体实现，也是 create_model 的并列返回类型；
+# 运行时职责上，MpsQueueEmbeddings 会组合并包装 BatchHuggingFaceEmbeddings，
+# 只为 Apple MPS 补充官方封装没有提供的固定线程串行化和生命周期线程亲和。
+# 因此调用方不需要根据设备区分两种实现。
+EmbeddingRuntime = BatchHuggingFaceEmbeddings | MpsQueueEmbeddings
 
 
-EmbeddingRuntime = BatchHuggingFaceEmbeddings | MpsEmbeddingExecutor
-
-
-def create_embedders(
+def create_model(
     model_path: str | Path,
     *,
     device: str | None = None,
     embedding_batch_size: int | None = None,
     query_embedding_batch_size: int | None = None,
 ) -> EmbeddingRuntime:
-    """校验本地模型，并按设备创建直接或固定线程 Embeddings。"""
+    """校验模型并按设备动态返回具体 Embeddings 实现。
+
+    ``create_model`` 名称表示统一的模型运行时创建入口；它的返回值不一定是
+    裸的 ``BatchHuggingFaceEmbeddings``，MPS 环境下会是实现同样接口的
+    ``MpsQueueEmbeddings``。
+    """
 
     settings = get_ingestion_settings()
     embedding_batch_size = (
@@ -221,7 +137,7 @@ def create_embedders(
         )
     print(f"Embedding 推理设备：{device}", flush=True)
 
-    def create_model() -> BatchHuggingFaceEmbeddings:
+    def _build_model() -> BatchHuggingFaceEmbeddings:
         return BatchHuggingFaceEmbeddings(
             model=str(model_path),
             model_kwargs={
@@ -242,8 +158,9 @@ def create_embedders(
 
     try:
         if device == "mps":
-            return MpsEmbeddingExecutor(create_model)
-        return create_model()
+            # 入口：传入工厂函数而不是提前执行，确保底层模型在 MPS 工作线程创建。
+            return MpsQueueEmbeddings(_build_model)
+        return _build_model()
     except Exception as exc:
         raise _error(
             stage="initialize_model",
@@ -262,7 +179,7 @@ def _error(
     return AppException(
         KNOWLEDGE_INGESTION_FAILED,
         module="service.ingestion.embedding",
-        operation="create_embedders",
+        operation="create_model",
         stage=stage,
         message=message,
         details=details,
@@ -272,6 +189,5 @@ def _error(
 __all__ = [
     "BatchHuggingFaceEmbeddings",
     "EmbeddingRuntime",
-    "MpsEmbeddingExecutor",
-    "create_embedders",
+    "create_model",
 ]
