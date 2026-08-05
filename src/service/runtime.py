@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from pprint import pformat
 from threading import Lock
 
+import pymysql
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.documents import Document
@@ -20,13 +21,15 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.mysql.pymysql import PyMySQLSaver
 
 from configuration import (
+    CheckpointSettings,
     ContextCompressionSettings,
     IngestionSettings,
     RetrievalSettings,
     get_chat_model_settings,
+    get_checkpoint_settings,
     get_context_compression_settings,
     get_ingestion_settings,
     get_retrieval_settings,
@@ -65,6 +68,7 @@ class Runtime:
         settings: IngestionSettings | None = None,
         retrieval_settings: RetrievalSettings | None = None,
         context_compression_settings: ContextCompressionSettings | None = None,
+        checkpoint_settings: CheckpointSettings | None = None,
     ) -> None:
         """加载 Embedding、持久化 Chroma、政策数据和带压缩能力的 Agent。"""
 
@@ -73,11 +77,13 @@ class Runtime:
         self.context_compression_settings = (
             context_compression_settings or get_context_compression_settings()
         )
+        self.checkpoint_settings = checkpoint_settings or get_checkpoint_settings()
         self.ingestion: IngestionPipeline | None = None
         self.retrieval_context: RetrievalToolContext | None = None
         self.chat_model: ChatOpenAI | None = None
         self.agent: Runnable | None = None
         self.checkpointer: BaseCheckpointSaver | None = None
+        self._checkpoint_connection: object | None = None
         self.chunks: list[Document] = []
         self.chunk_count = 0
         self._ingestion_lock = Lock()
@@ -138,8 +144,21 @@ class Runtime:
                 max_completion_tokens=chat_settings.max_tokens,
                 **common_model_kwargs,
             )
-            if self.context_compression_settings.enabled:
-                self.checkpointer = InMemorySaver()
+            if not self.checkpoint_settings.database_url:
+                raise ValueError(
+                    "环境变量 CHAT_AGENT_CHECKPOINT_DATABASE_URL 未配置，"
+                    "无法初始化 MySQL Checkpointer"
+                )
+            print("正在初始化 MySQL Checkpointer...", flush=True)
+            self._checkpoint_connection = pymysql.connect(
+                **PyMySQLSaver.parse_conn_string(
+                    self.checkpoint_settings.database_url
+                ),
+                autocommit=True,
+            )
+            # 初始化checkpointer, 对应saver为PyMySQLSaver（第三方实现）
+            self.checkpointer = PyMySQLSaver(self._checkpoint_connection)
+            self.checkpointer.setup()
             middleware: list[object] = []
             if self.context_compression_settings.enabled:
                 summary_model = ChatOpenAI(
@@ -388,14 +407,19 @@ class Runtime:
     def close(self) -> None:
         """释放 Agent、模型、Chroma 客户端和设备缓存。"""
 
+        checkpoint_connection = self._checkpoint_connection
+        self._checkpoint_connection = None
+        self.checkpointer = None
         ingestion = self.ingestion
         self.ingestion = None
         self.retrieval_context = None
         self.agent = None
-        self.checkpointer = None
         self.chat_model = None
         self.chunks = []
         self.chunk_count = 0
+
+        if checkpoint_connection is not None:
+            checkpoint_connection.close()
 
         if ingestion is not None:
             ingestion.close()

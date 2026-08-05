@@ -10,7 +10,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 import src.service.runtime as runtime_module
 
-from configuration import ContextCompressionSettings, IngestionSettings
+from configuration import (
+    CheckpointSettings,
+    ContextCompressionSettings,
+    IngestionSettings,
+)
+from src.errors import AppException, CHAT_AGENT_UNAVAILABLE
 from src.service.agent.tools import (
     RetrievalToolContext,
     exact_paragraph_search,
@@ -24,6 +29,32 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
 
     captured: dict[str, object] = {}
     runnable = Mock()
+
+    class FakeCheckpointConnection:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakePyMySQLSaver:
+        def __init__(self, conn: object) -> None:
+            self.conn = conn
+            self.setup_called = False
+
+        @staticmethod
+        def parse_conn_string(conn_string: str) -> dict[str, object]:
+            return {
+                "host": "127.0.0.1",
+                "user": "user",
+                "password": "pass",
+                "database": "chat_agent_checkpoint",
+                "port": 3306,
+                "unix_socket": None,
+            }
+
+        def setup(self) -> None:
+            self.setup_called = True
 
     class FakeVectorStore:
         def get(self, *, include: list[str]) -> dict[str, list[str]]:
@@ -52,23 +83,70 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
     monkeypatch.setattr(runtime_module, "IngestionPipeline", FakeIngestion)
     monkeypatch.setattr(runtime_module, "ChatOpenAI", FakeChatModel)
     monkeypatch.setattr(runtime_module, "create_agent", create_agent)
+    fake_conn = FakeCheckpointConnection()
+    monkeypatch.setattr(runtime_module.pymysql, "connect", lambda **kwargs: fake_conn)
+    monkeypatch.setattr(runtime_module, "PyMySQLSaver", FakePyMySQLSaver)
 
     runtime = Runtime(
         settings=IngestionSettings(),
         context_compression_settings=ContextCompressionSettings(enabled=False),
+        checkpoint_settings=CheckpointSettings(
+            database_url="mysql://user:pass@127.0.0.1:3306/chat_agent_checkpoint"
+        ),
     )
 
     assert runtime.agent is runnable
     assert captured["tools"] == [exact_paragraph_search, retrieve]
     assert captured["context_schema"] is RetrievalToolContext
     assert captured["middleware"] == []
-    assert captured["checkpointer"] is None
+    assert captured["checkpointer"] is runtime.checkpointer
+    assert isinstance(runtime.checkpointer, FakePyMySQLSaver)
+    assert runtime.checkpointer.setup_called is True
+    assert runtime._checkpoint_connection is fake_conn
     assert runtime.retrieval_context is not None
     assert runtime.ingestion is not None
     assert runtime.retrieval_context.vector_store is runtime.ingestion.vector_store
     assert runtime.retrieval_context.embeddings is runtime.ingestion.embeddings
     assert runtime.retrieval_context.top_k == 3
     runtime.close()
+    assert runtime.checkpointer is None
+    assert runtime._checkpoint_connection is None
+    assert fake_conn.closed is True
+
+
+def test_runtime_requires_checkpoint_database_url(monkeypatch) -> None:
+    """启用 Checkpointer 但缺少数据库地址时必须显式失败。"""
+
+    class FakeVectorStore:
+        def get(self, *, include: list[str]) -> dict[str, list[str]]:
+            assert include == []
+            return {"ids": ["chunk-1"]}
+
+    class FakeIngestion:
+        def __init__(self, **kwargs: object) -> None:
+            self.vector_store = FakeVectorStore()
+            self.embeddings = Mock(name="batch_embeddings")
+
+        def run(self, path: object, **kwargs: object) -> list[object]:
+            raise AssertionError("已有 Chroma 数据时不应执行入库任务")
+
+        def close(self) -> None:
+            pass
+
+    class FakeChatModel:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(runtime_module, "IngestionPipeline", FakeIngestion)
+    monkeypatch.setattr(runtime_module, "ChatOpenAI", FakeChatModel)
+
+    with pytest.raises(AppException) as exc_info:
+        Runtime(
+            settings=IngestionSettings(),
+            checkpoint_settings=CheckpointSettings(database_url=None),
+        )
+
+    assert exc_info.value.error_code is CHAT_AGENT_UNAVAILABLE
 
 
 def test_runtime_invokes_official_agent_with_thread_id() -> None:
