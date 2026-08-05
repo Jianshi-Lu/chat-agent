@@ -1,5 +1,5 @@
-"""预留知识检索领域扩展。
+"""知识检索领域接口。"""
 
-当前项目直接使用 ``Chroma.as_retriever`` 返回的官方
-``VectorStoreRetriever``，不在本包重复包装检索接口。
-"""
+from .batch import BatchQueryEmbedder, BatchRetriever, QueryRetrievalResult
+
+__all__ = ["BatchQueryEmbedder", "BatchRetriever", "QueryRetrievalResult"]

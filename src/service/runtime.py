@@ -17,7 +17,6 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
-from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -42,6 +41,7 @@ from src.errors import (
 
 from .agent.tools import build_retriever_tool, exact_paragraph_search
 from .ingestion import IngestionPipeline, KnowledgeDocument
+from .retrieval import BatchRetriever
 
 
 class Runtime:
@@ -61,7 +61,7 @@ class Runtime:
             context_compression_settings or get_context_compression_settings()
         )
         self.ingestion: IngestionPipeline | None = None
-        self.retriever: VectorStoreRetriever | None = None
+        self.retriever: BatchRetriever | None = None
         self.retriever_tool: BaseTool | None = None
         self.chat_model: ChatOpenAI | None = None
         self.agent: Runnable | None = None
@@ -100,9 +100,10 @@ class Runtime:
                 )
                 self.chunk_count = len(self.chunks)
 
-            self.retriever = self.ingestion.vector_store.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": self.retrieval_settings.top_k},
+            self.retriever = BatchRetriever(
+                vector_store=self.ingestion.vector_store,
+                embeddings=self.ingestion.embeddings,
+                top_k=self.retrieval_settings.top_k,
             )
 
             print("正在初始化 LangChain Agent...", flush=True)

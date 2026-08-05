@@ -111,6 +111,7 @@ def test_pipeline_only_assembles_components(monkeypatch) -> None:
     assert documents[0].metadata["chunk_id"] == "policies-document-0-chunk-0"
     splitter.split_documents.assert_called_once_with([source_document])
     pipeline.close()
+    embeddings.close.assert_called_once_with()
 
 
 def test_vectorize_document_uses_stable_uuid_and_object_metadata(monkeypatch) -> None:

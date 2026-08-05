@@ -1,14 +1,26 @@
-"""定义服务 Agent 使用的工具和 LangChain 检索工具工厂。
+"""定义服务 Agent 使用的工具和批量检索 Tool 工厂。"""
 
-``@tool`` 会把普通 Python 函数注册为 LangChain Agent 可选择调用的工具：模型
-根据工具名称、描述和参数 schema 决定是否发起工具调用，LangChain 负责执行函数
-并把返回值回传给模型。两个占位工具保留现状；真实政策检索直接接收 LangChain
-``BaseRetriever``，由 ``create_retriever_tool`` 完成 Tool 封装。
-"""
+from pydantic import BaseModel, Field, field_validator
+from langchain_core.tools import BaseTool, StructuredTool, tool
 
-from langchain_core.prompts import PromptTemplate
-from langchain_core.retrievers import BaseRetriever
-from langchain_core.tools import BaseTool, create_retriever_tool, tool
+from src.service.retrieval import BatchRetriever, QueryRetrievalResult
+
+
+class RetrieveManyInput(BaseModel):
+    """要求模型把同一轮的全部检索子问题放入一个列表。"""
+
+    queries: list[str] = Field(
+        min_length=1,
+        description="需要同时检索的全部独立问题；同一轮只提交一个 queries 列表。",
+    )
+
+    @field_validator("queries")
+    @classmethod
+    def normalize_queries(cls, queries: list[str]) -> list[str]:
+        normalized = [query.strip() for query in queries]
+        if any(not query for query in normalized):
+            raise ValueError("queries 中不能包含空查询")
+        return normalized
 
 
 @tool
@@ -27,24 +39,47 @@ def semantic_search(query: str) -> str:
     return f"占位结果：语义检索 {query}"
 
 
-def build_retriever_tool(retriever_instance: BaseRetriever) -> BaseTool:
-    """把 LangChain Retriever 包装成 Agent 可注册的 ``retrieve`` Tool。"""
+def _format_results(results: list[QueryRetrievalResult]) -> str:
+    blocks: list[str] = []
+    for query_index, result in enumerate(results, start=1):
+        lines = [f"查询 {query_index}：{result.query}"]
+        if not result.documents:
+            lines.append("未检索到相关知识片段。")
+        for document_index, document in enumerate(result.documents, start=1):
+            document_id = document.id or document.metadata.get("id", "未知")
+            source = document.metadata.get("source", "未知")
+            lines.append(
+                f"结果 {document_index}\n"
+                f"文档ID：{document_id}\n"
+                f"来源：{source}\n"
+                f"正文：\n{document.page_content}"
+            )
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
-    document_prompt = PromptTemplate.from_template(
-        "文档ID：{id}\n"
-        "来源：{source}\n"
-        "正文：\n{page_content}"
-    )
 
-    return create_retriever_tool(
-        retriever_instance,
-        name="retrieve",
+def build_retriever_tool(retriever_instance: BatchRetriever) -> BaseTool:
+    """把批量 Retriever 包装成结构化 ``retrieve_many`` Tool。"""
+
+    def retrieve_many(queries: list[str]) -> str:
+        print(f"模型调用工具：retrieve_many（{len(queries)} 个查询）", flush=True)
+        return _format_results(retriever_instance.retrieve_many(queries))
+
+    return StructuredTool.from_function(
+        func=retrieve_many,
+        name="retrieve_many",
         description=(
-            "检索政策知识库中的相关文本片段。涉及政策事实、政策定义、"
-            "政策要求或政策来源的问题，应优先调用此工具。"
+            "批量检索政策知识库。涉及政策事实、定义、要求或来源时调用；"
+            "若用户一轮提出多个问题，必须把全部子问题放入同一个 queries 数组，"
+            "只调用一次本工具，不要为每个子问题分别发起工具调用。"
         ),
-        document_prompt=document_prompt,
+        args_schema=RetrieveManyInput,
     )
 
 
-__all__ = ["build_retriever_tool", "exact_paragraph_search", "semantic_search"]
+__all__ = [
+    "RetrieveManyInput",
+    "build_retriever_tool",
+    "exact_paragraph_search",
+    "semantic_search",
+]

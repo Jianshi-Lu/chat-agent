@@ -27,15 +27,10 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
             assert include == []
             return {"ids": ["chunk-1"]}
 
-        def as_retriever(self, **kwargs: object) -> Mock:
-            captured["retriever_kwargs"] = kwargs
-            return Mock()
-
     class FakeIngestion:
-        vector_store = FakeVectorStore()
-
         def __init__(self, **kwargs: object) -> None:
-            pass
+            self.vector_store = FakeVectorStore()
+            self.embeddings = Mock(name="batch_embeddings")
 
         def run(self, path: object, **kwargs: object) -> list[object]:
             raise AssertionError("已有 Chroma 数据时不应执行入库任务")
@@ -52,11 +47,11 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
         return runnable
 
     monkeypatch.setattr(runtime_module, "IngestionPipeline", FakeIngestion)
-    monkeypatch.setattr(
-        runtime_module,
-        "build_retriever_tool",
-        lambda retriever: retriever_tool,
-    )
+    def build_tool(retriever: object) -> Mock:
+        captured["retriever"] = retriever
+        return retriever_tool
+
+    monkeypatch.setattr(runtime_module, "build_retriever_tool", build_tool)
     monkeypatch.setattr(runtime_module, "ChatOpenAI", FakeChatModel)
     monkeypatch.setattr(runtime_module, "create_agent", create_agent)
 
@@ -69,10 +64,12 @@ def test_runtime_creates_official_agent_directly(monkeypatch) -> None:
     assert captured["tools"] == [exact_paragraph_search, retriever_tool]
     assert captured["middleware"] == []
     assert captured["checkpointer"] is None
-    assert captured["retriever_kwargs"] == {
-        "search_type": "similarity",
-        "search_kwargs": {"k": 3},
-    }
+    assert captured["retriever"] is runtime.retriever
+    assert runtime.retriever is not None
+    assert runtime.ingestion is not None
+    assert runtime.retriever.vector_store is runtime.ingestion.vector_store
+    assert runtime.retriever.embeddings is runtime.ingestion.embeddings
+    assert runtime.retriever.top_k == 3
     runtime.close()
 
 

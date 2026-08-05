@@ -1,16 +1,13 @@
 """组装源资料解析、切分、向量化和 Chroma 持久化流程。"""
 
-import gc
 from pathlib import Path
 
-import torch
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
 
 from src.errors import AppException, KNOWLEDGE_INGESTION_FAILED
 
-from .embedding import create_embedders
+from .embedding import EmbeddingRuntime, create_embedders
 from .models import KnowledgeDocument
 from .parser import parse_documents
 from .persistence import (
@@ -36,7 +33,7 @@ class IngestionPipeline:
     ) -> None:
         """创建 Embeddings 和 Chroma；不在初始化时读取或写入源文件。"""
 
-        self.embeddings: HuggingFaceEmbeddings = create_embedders(
+        self.embeddings: EmbeddingRuntime = create_embedders(
             model_path,
             device=device,
             embedding_batch_size=embedding_batch_size,
@@ -175,14 +172,6 @@ class IngestionPipeline:
     def close(self) -> None:
         """释放 Pipeline 创建的模型和 Chroma 客户端，但保留磁盘数据。"""
 
-        embeddings = getattr(self, "embeddings", None)
-        embedding_model = getattr(embeddings, "_client", None)
-        if embedding_model is not None:
-            try:
-                embedding_model.to("cpu")
-            except Exception:
-                pass
-
         vector_store = getattr(self, "vector_store", None)
         if vector_store is not None:
             try:
@@ -191,14 +180,16 @@ class IngestionPipeline:
             except Exception:
                 pass
 
+        embeddings = getattr(self, "embeddings", None)
+        close_embeddings = getattr(embeddings, "close", None)
+        if callable(close_embeddings):
+            try:
+                close_embeddings()
+            except Exception:
+                pass
+
         self.vector_store = None
         self.embeddings = None
-        gc.collect()
-        try:
-            if torch.backends.mps.is_available():
-                torch.mps.empty_cache()
-        except Exception:
-            pass
 
 
 __all__ = ["IngestionPipeline"]
