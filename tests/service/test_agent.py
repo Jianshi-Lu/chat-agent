@@ -166,6 +166,7 @@ def test_runtime_invokes_official_agent_with_thread_id() -> None:
     )
     runtime.agent = runnable
     runtime.checkpointer = Mock()
+    runtime._observation_enabled = False
 
     assert runtime.answer("问题", thread_id="thread-1") == "回答"
     assert runnable.invoke.call_args.kwargs["config"] == {
@@ -194,6 +195,7 @@ def test_runtime_answer_with_title_returns_generated_title() -> None:
     )
     runtime.agent = runnable
     runtime.checkpointer = Mock()
+    runtime._observation_enabled = False
 
     answer, title = runtime.answer_with_title("问题", thread_id="thread-1")
     assert answer == "回答"

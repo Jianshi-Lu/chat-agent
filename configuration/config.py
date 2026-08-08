@@ -96,6 +96,7 @@ class HttpServerSettings:
 
     host: str = "127.0.0.1"
     port: int = 8082
+    log_level: str = "INFO"
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +152,9 @@ def get_checkpoint_settings() -> CheckpointSettings:
 def get_http_server_settings() -> HttpServerSettings:
     """返回进程内复用的 HTTP Server 配置实例。"""
 
-    return HttpServerSettings()
+    return HttpServerSettings(
+        log_level=os.environ.get("CHAT_AGENT_LOG_LEVEL", "INFO").upper(),
+    )
 
 
 @lru_cache(maxsize=1)

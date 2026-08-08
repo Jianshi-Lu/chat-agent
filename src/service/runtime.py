@@ -8,8 +8,11 @@ Chroma、Agent、模型引用和设备缓存。
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pprint import pformat
 from threading import Lock
 
@@ -43,10 +46,14 @@ from src.errors import (
 
 from .agent.tools import RetrievalToolContext, exact_paragraph_search, retrieve
 from .agent.middlewares.title_generator import ChatTitleState, ConversationTitleGenerator
+from .agent.chat_observer import AgentObservationHandler
 from .ingestion import IngestionPipeline, KnowledgeDocument
 
 
 _STATE_TRACE_ENV = "CHAT_AGENT_TRACE_STATE"
+_OBSERVATION_ENV = "CHAT_AGENT_OBSERVATION_ENABLED"
+
+log = logging.getLogger(__name__)
 
 
 def _state_trace_enabled() -> bool:
@@ -58,6 +65,26 @@ def _state_trace_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def _observation_enabled() -> bool:
+    """读取是否启用每次对话请求的 Agent 观测回调。"""
+
+    return os.environ.get(_OBSERVATION_ENV, "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class VectorizeOutcome:
+    """单个知识文件的向量化结果；失败时 ``chunk_count`` 为空并携带原因。"""
+
+    document_uuid: str
+    chunk_count: int | None = None
+    error_message: str | None = None
 
 
 class Runtime:
@@ -88,6 +115,7 @@ class Runtime:
         self.chunk_count = 0
         self._ingestion_lock = Lock()
         self._trace_state = _state_trace_enabled()
+        self._observation_enabled = _observation_enabled()
 
         try:
             print("正在加载本地 Embedding 模型和持久化 Chroma...", flush=True)
@@ -101,24 +129,14 @@ class Runtime:
             existing_chunk_count = len(
                 self.ingestion.vector_store.get(include=[]).get("ids", [])
             )
-            if existing_chunk_count:
-                self.chunk_count = existing_chunk_count
-                print(
-                    f"检测到已有 Chroma 数据：{existing_chunk_count} 个文本块，跳过向量化。",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"正在读取 {self.settings.source_path} 并生成文档向量...",
-                    flush=True,
-                )
-                self.chunk_count = len(
-                    self.ingestion.run(
-                        self.settings.source_path,
-                        chunk_size=self.settings.chunk_size,
-                        chunk_overlap=self.settings.chunk_overlap,
-                    )
-                )
+            # 知识文件入库统一走 Java → /internal/knowledge-files/vectorize 的
+            # 带 document_uuid 链路；启动时不再从 source_path 自动入库，
+            # 避免产生没有数据库记录、没有稳定 UUID 的孤儿向量。
+            self.chunk_count = existing_chunk_count
+            print(
+                f"检测到已有 Chroma 数据：{existing_chunk_count} 个文本块。",
+                flush=True,
+            )
 
             self.retrieval_context = RetrievalToolContext(
                 vector_store=self.ingestion.vector_store,
@@ -254,8 +272,16 @@ class Runtime:
                 message="本地知识问答运行时尚未初始化",
             )
 
+        config = self._thread_config(thread_id)
+        observer: AgentObservationHandler | None = None
+        if getattr(self, "_observation_enabled", True):
+            observer = AgentObservationHandler(
+                thread_id=thread_id,
+                question=question,
+            )
+            config["callbacks"] = [observer]
+
         try:
-            config = self._thread_config(thread_id)
             invoke_kwargs: dict[str, object] = {
                 "context": self.retrieval_context,
                 "config": config,
@@ -289,6 +315,9 @@ class Runtime:
                 stage="invoke_agent",
                 message="本地 LangChain Agent 调用失败",
             ) from exc
+        finally:
+            if observer is not None:
+                observer.summary()
 
         if not isinstance(answer, str) or not answer.strip():
             raise AppException(
@@ -314,8 +343,13 @@ class Runtime:
     def vectorize_documents(
         self,
         documents: Sequence[KnowledgeDocument],
-    ) -> list[tuple[str, int]]:
-        """在一次写锁内向量化多个知识文件，并在失败时按 UUID 补偿。"""
+    ) -> list[VectorizeOutcome]:
+        """在一次写锁内向量化多个知识文件，逐文档返回成功/失败。
+
+        单个文档失败只记录该文档的错误并继续处理后续文档；
+        半截 chunk 由 ``IngestionPipeline.vectorize_document`` 内部按 UUID 清理，
+        不再对整批做补偿删除，保证 Java 侧可以按文件独立落库。
+        """
 
         documents = list(documents)
         if not documents:
@@ -336,26 +370,91 @@ class Runtime:
             )
 
         with self._ingestion_lock:
-            results: list[tuple[str, int]] = []
-            try:
-                for document in documents:
+            results: list[VectorizeOutcome] = []
+            failed_count = 0
+            log.info(
+                "开始向量化知识文件: documentCount=%s",
+                len(documents),
+            )
+            for document in documents:
+                started_at = time.perf_counter()
+                log.info(
+                    "开始向量化知识文件: documentUuid=%s",
+                    document.document_uuid,
+                )
+                try:
                     chunks = self.ingestion.vectorize_document(
                         document,
                         chunk_size=self.settings.chunk_size,
                         chunk_overlap=self.settings.chunk_overlap,
                     )
-                    results.append((document.document_uuid, len(chunks)))
-            except Exception:
-                for document in documents:
-                    try:
-                        self.ingestion.delete_document(document.document_uuid)
-                    except AppException:
-                        pass
-                self._refresh_chunk_count()
-                raise
+                    elapsed_ms = round(
+                        (time.perf_counter() - started_at) * 1000
+                    )
+                    log.info(
+                        "知识文件向量化完成: documentUuid=%s, "
+                        "chunkCount=%s, elapsedMs=%s",
+                        document.document_uuid,
+                        len(chunks),
+                        elapsed_ms,
+                    )
+                    results.append(
+                        VectorizeOutcome(document.document_uuid, len(chunks))
+                    )
+                except Exception as exc:
+                    failed_count += 1
+                    elapsed_ms = round(
+                        (time.perf_counter() - started_at) * 1000
+                    )
+                    log.warning(
+                        "知识文件向量化失败: documentUuid=%s, "
+                        "reason=%s, elapsedMs=%s",
+                        document.document_uuid,
+                        exc,
+                        elapsed_ms,
+                    )
+                    results.append(
+                        VectorizeOutcome(
+                            document.document_uuid,
+                            error_message=str(exc) or "知识文件向量化失败",
+                        )
+                    )
 
             self._refresh_chunk_count()
+            total_chunk_count = sum(
+                result.chunk_count or 0 for result in results
+            )
+            log.info(
+                "知识文件向量化请求处理完成: documentCount=%s, "
+                "successCount=%s, failedCount=%s, totalChunkCount=%s",
+                len(documents),
+                len(documents) - failed_count,
+                failed_count,
+                total_chunk_count,
+            )
             return results
+
+    def get_document_chunk_count(self, document_uuid: str) -> int:
+        """在写锁内查询指定 document_uuid 当前在 Chroma 中的 chunk 数。"""
+
+        if not isinstance(document_uuid, str) or not document_uuid.strip():
+            raise AppException(
+                CHAT_INPUT_INVALID,
+                module="service.runtime",
+                operation="get_document_chunk_count",
+                stage="validate_input",
+                message="document_uuid 不能为空",
+            )
+        if self.ingestion is None:
+            raise AppException(
+                CHAT_AGENT_UNAVAILABLE,
+                module="service.runtime",
+                operation="get_document_chunk_count",
+                stage="validate_runtime",
+                message="知识向量化 Runtime 尚未初始化",
+            )
+        with self._ingestion_lock:
+            return self.ingestion.count_document_chunks(document_uuid)
 
     def delete_document(self, document_uuid: str) -> int:
         """在写锁内幂等删除指定 document_uuid 的向量。"""
@@ -423,12 +522,20 @@ class Runtime:
         return ""
 
     @staticmethod
-    def _thread_config(thread_id: str) -> dict[str, dict[str, str]]:
-        """构造 LangGraph checkpointer 使用的线程配置。"""
+    def _thread_config(
+        thread_id: str,
+        callbacks: list | None = None,
+    ) -> dict[str, object]:
+        """构造 LangGraph checkpointer 使用的线程配置，可选附带观测回调。"""
 
         if not isinstance(thread_id, str) or not thread_id.strip():
             raise ValueError("thread_id 不能为空")
-        return {"configurable": {"thread_id": thread_id.strip()}}
+        config: dict[str, object] = {
+            "configurable": {"thread_id": thread_id.strip()}
+        }
+        if callbacks:
+            config["callbacks"] = callbacks
+        return config
 
     def close(self) -> None:
         """释放 Agent、模型、Chroma 客户端和设备缓存。"""

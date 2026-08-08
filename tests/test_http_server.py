@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 import src.api.server as http_app
+from src.service.runtime import VectorizeOutcome
 
 
 class FakeRuntime:
@@ -43,9 +44,12 @@ class FakeRuntime:
             document.document_uuid for document in documents
         )
         return [
-            (document.document_uuid, 2)
+            VectorizeOutcome(document.document_uuid, 2)
             for document in documents
         ]
+
+    def get_document_chunk_count(self, document_uuid: str) -> int:
+        return 2
 
     def delete_document(self, document_uuid: str) -> int:
         self.deleted_document_uuids.append(document_uuid)
@@ -149,7 +153,12 @@ def test_vectorize_and_delete_knowledge_document(monkeypatch) -> None:
     assert vectorize_response.status_code == 200
     assert vectorize_response.json() == {
         "documents": [
-            {"documentUuid": document_uuid, "chunkCount": 2}
+            {
+                "documentUuid": document_uuid,
+                "success": True,
+                "chunkCount": 2,
+                "message": None,
+            }
         ]
     }
     assert delete_response.status_code == 200
@@ -159,3 +168,97 @@ def test_vectorize_and_delete_knowledge_document(monkeypatch) -> None:
     }
     assert runtimes[0].vectorized_document_uuids == [document_uuid]
     assert runtimes[0].deleted_document_uuids == [document_uuid]
+
+
+def test_vector_status_returns_existing_chunk_count(monkeypatch) -> None:
+    """状态查询应返回当前 Chroma 中的 chunk 数，供 Java 对账与重试。"""
+
+    runtimes: list[FakeRuntime] = []
+
+    def create_runtime() -> FakeRuntime:
+        runtime = FakeRuntime()
+        runtimes.append(runtime)
+        return runtime
+
+    monkeypatch.setattr(http_app, "Runtime", create_runtime)
+    document_uuid = "550e8400-e29b-41d4-a716-446655440000"
+
+    with TestClient(http_app.app) as client:
+        response = client.get(
+            f"/internal/knowledge-files/{document_uuid}"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "documentUuid": document_uuid,
+        "chunkCount": 2,
+    }
+
+
+def test_vectorize_returns_per_document_failure(monkeypatch) -> None:
+    """单个文档向量化失败应作为该文档结果返回，不连坐整批。"""
+
+    class PartiallyFailingRuntime(FakeRuntime):
+        def vectorize_documents(self, documents):
+            self.vectorized_document_uuids.extend(
+                document.document_uuid for document in documents
+            )
+            return [
+                VectorizeOutcome(document.document_uuid, 2)
+                if index == 0
+                else VectorizeOutcome(
+                    document.document_uuid,
+                    error_message="切分失败",
+                )
+                for index, document in enumerate(documents)
+            ]
+
+    monkeypatch.setattr(http_app, "Runtime", PartiallyFailingRuntime)
+    first_uuid = "550e8400-e29b-41d4-a716-446655440000"
+    second_uuid = "660e8400-e29b-41d4-a716-446655440000"
+    payload = {
+        "documents": [
+            {
+                "documentUuid": first_uuid,
+                "content": "# 第一份",
+                "originalFilename": "a.txt",
+                "originalObjectKey": f"{first_uuid}/original/a.txt",
+                "convertedObjectKey": f"{first_uuid}/converted/content.md",
+                "originalSha256": "a" * 64,
+                "convertedSha256": "b" * 64,
+            },
+            {
+                "documentUuid": second_uuid,
+                "content": "# 第二份",
+                "originalFilename": "b.txt",
+                "originalObjectKey": f"{second_uuid}/original/b.txt",
+                "convertedObjectKey": f"{second_uuid}/converted/content.md",
+                "originalSha256": "c" * 64,
+                "convertedSha256": "d" * 64,
+            },
+        ]
+    }
+
+    with TestClient(http_app.app) as client:
+        response = client.post(
+            "/internal/knowledge-files/vectorize",
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "documents": [
+            {
+                "documentUuid": first_uuid,
+                "success": True,
+                "chunkCount": 2,
+                "message": None,
+            },
+            {
+                "documentUuid": second_uuid,
+                "success": False,
+                "chunkCount": None,
+                "message": "切分失败",
+            },
+        ]
+    }

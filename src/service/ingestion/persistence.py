@@ -93,6 +93,32 @@ def delete_document_chunks(
         ) from exc
 
 
+def count_document_chunks(
+    vector_store: Chroma,
+    document_uuid: str,
+) -> int:
+    """查询一个 document_uuid 当前在 Chroma 中的 chunk 数量（不存在为 0）。"""
+
+    if not isinstance(document_uuid, str) or not document_uuid.strip():
+        raise _error(
+            stage="validate_document_uuid",
+            message="查询向量状态时 document_uuid 不能为空",
+        )
+
+    try:
+        result = vector_store.get(
+            where={"document_uuid": document_uuid.strip()},
+            include=[],
+        )
+        return len(result.get("ids") or [])
+    except Exception as exc:
+        raise _error(
+            stage="count_document_chunks",
+            message="知识文件向量状态查询失败",
+            details={"document_uuid": document_uuid},
+        ) from exc
+
+
 def _error(
     *,
     stage: str,
@@ -112,6 +138,7 @@ def _error(
 
 
 __all__ = [
+    "count_document_chunks",
     "create_vector_store",
     "delete_document_chunks",
     "persist_documents",

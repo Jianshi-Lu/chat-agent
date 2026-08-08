@@ -11,6 +11,7 @@ from .embedding import EmbeddingRuntime, create_model
 from .models import KnowledgeDocument
 from .parser import parse_documents
 from .persistence import (
+    count_document_chunks,
     create_vector_store,
     delete_document_chunks,
     persist_documents,
@@ -168,6 +169,11 @@ class IngestionPipeline:
         """幂等删除一个知识文件产生的全部向量 chunk。"""
 
         return delete_document_chunks(self.vector_store, document_uuid)
+
+    def count_document_chunks(self, document_uuid: str) -> int:
+        """查询一个知识文件当前在 Chroma 中的 chunk 数（不存在为 0）。"""
+
+        return count_document_chunks(self.vector_store, document_uuid)
 
     def close(self) -> None:
         """释放 Pipeline 创建的模型和 Chroma 客户端，但保留磁盘数据。"""

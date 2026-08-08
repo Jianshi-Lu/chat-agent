@@ -7,6 +7,7 @@ Runtime 生命周期以及 HTTP Server 配置都集中在这里。模型权重�
 """
 
 from contextlib import asynccontextmanager
+import logging
 from typing import AsyncIterator
 from uuid import UUID
 
@@ -19,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from configuration import get_http_server_settings
 from src.errors import AppException, CHAT_AGENT_UNAVAILABLE, CHAT_INPUT_INVALID
 from src.service.ingestion import KnowledgeDocument
-from src.service.runtime import Runtime
+from src.service.runtime import Runtime, VectorizeOutcome
 
 
 class ChatRequest(BaseModel):
@@ -86,12 +87,14 @@ class VectorizeDocumentsRequest(BaseModel):
 
 
 class VectorizedDocumentResponse(BaseModel):
-    """返回单个知识文件实际写入的 chunk 数量。"""
+    """返回单个知识文件的向量化结果；失败时 success=false 并携带原因。"""
 
     model_config = ConfigDict(populate_by_name=True)
 
     document_uuid: UUID = Field(alias="documentUuid")
-    chunk_count: int = Field(alias="chunkCount", ge=1)
+    success: bool
+    chunk_count: int | None = Field(default=None, alias="chunkCount")
+    message: str | None = None
 
 
 class VectorizeDocumentsResponse(BaseModel):
@@ -107,6 +110,15 @@ class DeleteKnowledgeDocumentResponse(BaseModel):
 
     document_uuid: UUID = Field(alias="documentUuid")
     deleted_chunk_count: int = Field(alias="deletedChunkCount", ge=0)
+
+
+class KnowledgeFileVectorStatusResponse(BaseModel):
+    """返回一个 document_uuid 当前在 Chroma 中的 chunk 数量（不存在为 0）。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    document_uuid: UUID = Field(alias="documentUuid")
+    chunk_count: int = Field(alias="chunkCount", ge=0)
 
 
 @asynccontextmanager
@@ -222,17 +234,46 @@ def vectorize_knowledge_files(
             message="知识向量化 Runtime 尚未就绪",
         )
 
-    results = runtime.vectorize_documents(
+    outcomes: list[VectorizeOutcome] = runtime.vectorize_documents(
         [document.to_domain() for document in payload.documents]
     )
     return VectorizeDocumentsResponse(
         documents=[
             VectorizedDocumentResponse(
-                documentUuid=document_uuid,
-                chunkCount=chunk_count,
+                documentUuid=outcome.document_uuid,
+                success=outcome.error_message is None,
+                chunkCount=outcome.chunk_count,
+                message=outcome.error_message,
             )
-            for document_uuid, chunk_count in results
+            for outcome in outcomes
         ]
+    )
+
+
+@app.get(
+    "/internal/knowledge-files/{document_uuid}",
+    response_model=KnowledgeFileVectorStatusResponse,
+)
+def get_knowledge_file_vector_status(
+    request: Request,
+    document_uuid: UUID,
+) -> KnowledgeFileVectorStatusResponse:
+    """查询一个知识文件当前在 Chroma 中的向量状态（Java 对账/重试前置校验）。"""
+
+    runtime: Runtime | None = getattr(request.app.state, "runtime", None)
+    if runtime is None or not getattr(request.app.state, "ready", False):
+        raise AppException(
+            CHAT_AGENT_UNAVAILABLE,
+            module="api.server",
+            operation="get_knowledge_file_vector_status",
+            stage="validate_runtime",
+            message="知识向量化 Runtime 尚未就绪",
+        )
+
+    chunk_count = runtime.get_document_chunk_count(str(document_uuid))
+    return KnowledgeFileVectorStatusResponse(
+        documentUuid=document_uuid,
+        chunkCount=chunk_count,
     )
 
 
@@ -263,10 +304,26 @@ def delete_knowledge_file(
     )
 
 
+def _configure_app_logging(level_name: str) -> None:
+    """按配置项设置应用日志级别，使观测回调的 debug/info 明细可见。"""
+
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    for logger_name in (
+        "src.service.runtime",
+        "src.service.agent.chat_observer",
+    ):
+        logging.getLogger(logger_name).setLevel(level)
+
+
 def main() -> int:
     """读取配置并启动单 worker Uvicorn Server。"""
 
     settings = get_http_server_settings()
+    _configure_app_logging(settings.log_level)
     uvicorn.run(
         app,
         host=settings.host,
@@ -284,6 +341,7 @@ __all__ = [
     "ChatRequest",
     "ChatResponse",
     "DeleteKnowledgeDocumentResponse",
+    "KnowledgeFileVectorStatusResponse",
     "VectorizeDocumentRequest",
     "VectorizeDocumentsRequest",
     "VectorizeDocumentsResponse",
@@ -291,6 +349,7 @@ __all__ = [
     "app",
     "chat",
     "delete_knowledge_file",
+    "get_knowledge_file_vector_status",
     "health",
     "lifespan",
     "main",
