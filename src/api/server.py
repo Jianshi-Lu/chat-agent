@@ -1,26 +1,18 @@
-"""定义并启动本地知识问答 HTTP API。
-
-本模块同时负责 HTTP 边界和 Uvicorn 启动入口：请求模型、路由、应用异常转换、
-Runtime 生命周期以及 HTTP Server 配置都集中在这里。模型权重、持久化 Chroma、
-检索器和 LangChain Agent 由 ``src.service.runtime.Runtime`` 持有，不会在每个请求中
-重复初始化。
-"""
+"""chat-agent 的对话 HTTP API 与 Uvicorn 启动入口。"""
 
 from contextlib import asynccontextmanager
 import logging
 from typing import AsyncIterator
-from uuid import UUID
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from configuration import get_http_server_settings
 from src.errors import AppException, CHAT_AGENT_UNAVAILABLE, CHAT_INPUT_INVALID
-from src.service.ingestion import KnowledgeDocument
-from src.service.runtime import Runtime, VectorizeOutcome
+from src.service.runtime import Runtime
 
 
 class ChatRequest(BaseModel):
@@ -32,8 +24,6 @@ class ChatRequest(BaseModel):
     @field_validator("thread_id")
     @classmethod
     def normalize_thread_id(cls, value: str) -> str:
-        """拒绝空白线程标识，并统一去除首尾空格。"""
-
         normalized = value.strip()
         if not normalized:
             raise ValueError("thread_id 不能为空")
@@ -41,111 +31,36 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """承载一次对话生成的回答；``title`` 仅在首轮自动生成后返回。"""
+    """承载一次对话生成的回答；标题仅在首轮生成后返回。"""
 
     answer: str
     title: str | None = None
-
-
-class VectorizeDocumentRequest(BaseModel):
-    """承载一个 converted Markdown 及其稳定对象存储 metadata。"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    document_uuid: UUID = Field(alias="documentUuid")
-    content: str = Field(min_length=1)
-    original_filename: str = Field(alias="originalFilename", min_length=1)
-    original_object_key: str = Field(alias="originalObjectKey", min_length=1)
-    converted_object_key: str = Field(alias="convertedObjectKey", min_length=1)
-    original_sha256: str = Field(
-        alias="originalSha256",
-        pattern=r"^[0-9a-f]{64}$",
-    )
-    converted_sha256: str = Field(
-        alias="convertedSha256",
-        pattern=r"^[0-9a-f]{64}$",
-    )
-
-    def to_domain(self) -> KnowledgeDocument:
-        """转换为不依赖 FastAPI/Pydantic 的 ingestion 输入。"""
-
-        return KnowledgeDocument(
-            document_uuid=str(self.document_uuid),
-            content=self.content,
-            original_filename=self.original_filename,
-            original_object_key=self.original_object_key,
-            converted_object_key=self.converted_object_key,
-            original_sha256=self.original_sha256,
-            converted_sha256=self.converted_sha256,
-        )
-
-
-class VectorizeDocumentsRequest(BaseModel):
-    """承载一次 Java 请求中的全部知识文件。"""
-
-    documents: list[VectorizeDocumentRequest] = Field(min_length=1)
-
-
-class VectorizedDocumentResponse(BaseModel):
-    """返回单个知识文件的向量化结果；失败时 success=false 并携带原因。"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    document_uuid: UUID = Field(alias="documentUuid")
-    success: bool
-    chunk_count: int | None = Field(default=None, alias="chunkCount")
-    message: str | None = None
-
-
-class VectorizeDocumentsResponse(BaseModel):
-    """返回一次批量向量化的全部结果。"""
-
-    documents: list[VectorizedDocumentResponse]
-
-
-class DeleteKnowledgeDocumentResponse(BaseModel):
-    """返回按 document_uuid 删除的 chunk 数量。"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    document_uuid: UUID = Field(alias="documentUuid")
-    deleted_chunk_count: int = Field(alias="deletedChunkCount", ge=0)
-
-
-class KnowledgeFileVectorStatusResponse(BaseModel):
-    """返回一个 document_uuid 当前在 Chroma 中的 chunk 数量（不存在为 0）。"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    document_uuid: UUID = Field(alias="documentUuid")
-    chunk_count: int = Field(alias="chunkCount", ge=0)
+    referenced_bid_record_ids: list[int] = Field(default_factory=list)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """在应用启动时创建 Runtime，在应用关闭时释放全部资源。"""
+    """在应用启动时创建 Agent Runtime，在关闭时统一释放。"""
 
     settings = get_http_server_settings()
     runtime = Runtime()
     app.state.runtime = runtime
     app.state.ready = True
     print(
-        f"知识库初始化完成：{runtime.chunk_count} 个文本块\n"
-        f"HTTP Server 已启动：http://{settings.host}:{settings.port}",
+        f"Chat Agent 已就绪：http://{settings.host}:{settings.port}",
         flush=True,
     )
-
     try:
         yield
     finally:
         app.state.ready = False
         app.state.runtime = None
         runtime.close()
-        print("Runtime 资源已释放。", flush=True)
+        print("Chat Agent Runtime 资源已释放。", flush=True)
 
 
 app = FastAPI(
-    title="Knowledge Ingestion Agent",
+    title="Chat Agent",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -155,8 +70,6 @@ app = FastAPI(
 
 @app.exception_handler(AppException)
 async def handle_app_exception(_: Request, exc: AppException) -> JSONResponse:
-    """将应用异常转换为不暴露底层堆栈的统一 JSON 响应。"""
-
     return JSONResponse(
         status_code=exc.error_code.http_status,
         content={
@@ -172,8 +85,6 @@ async def handle_request_validation(
     _: Request,
     _exc: RequestValidationError,
 ) -> JSONResponse:
-    """将请求体校验错误统一转换为 400 响应。"""
-
     return JSONResponse(
         status_code=CHAT_INPUT_INVALID.http_status,
         content={
@@ -186,8 +97,6 @@ async def handle_request_validation(
 
 @app.get("/health")
 def health(request: Request) -> dict[str, str]:
-    """返回当前 HTTP Server 是否完成 Runtime 初始化。"""
-
     if not getattr(request.app.state, "ready", False):
         return {"status": "not_ready"}
     return {"status": "ready"}
@@ -195,8 +104,6 @@ def health(request: Request) -> dict[str, str]:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: Request, payload: ChatRequest) -> ChatResponse:
-    """按 thread_id 执行一次可恢复上下文的检索增强问答。"""
-
     runtime: Runtime | None = getattr(request.app.state, "runtime", None)
     if runtime is None or not getattr(request.app.state, "ready", False):
         raise AppException(
@@ -206,107 +113,18 @@ def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             stage="validate_runtime",
             message="知识问答 Runtime 尚未就绪",
         )
-
-    answer, title = runtime.answer_with_title(
+    result = runtime.answer_with_references(
         payload.question,
         thread_id=payload.thread_id,
     )
-    return ChatResponse(answer=answer, title=title)
-
-
-@app.post(
-    "/internal/knowledge-files/vectorize",
-    response_model=VectorizeDocumentsResponse,
-)
-def vectorize_knowledge_files(
-    request: Request,
-    payload: VectorizeDocumentsRequest,
-) -> VectorizeDocumentsResponse:
-    """向量化 Java 已转换并持久化的一个或多个 Markdown 文件。"""
-
-    runtime: Runtime | None = getattr(request.app.state, "runtime", None)
-    if runtime is None or not getattr(request.app.state, "ready", False):
-        raise AppException(
-            CHAT_AGENT_UNAVAILABLE,
-            module="api.server",
-            operation="vectorize_knowledge_files",
-            stage="validate_runtime",
-            message="知识向量化 Runtime 尚未就绪",
-        )
-
-    outcomes: list[VectorizeOutcome] = runtime.vectorize_documents(
-        [document.to_domain() for document in payload.documents]
-    )
-    return VectorizeDocumentsResponse(
-        documents=[
-            VectorizedDocumentResponse(
-                documentUuid=outcome.document_uuid,
-                success=outcome.error_message is None,
-                chunkCount=outcome.chunk_count,
-                message=outcome.error_message,
-            )
-            for outcome in outcomes
-        ]
-    )
-
-
-@app.get(
-    "/internal/knowledge-files/{document_uuid}",
-    response_model=KnowledgeFileVectorStatusResponse,
-)
-def get_knowledge_file_vector_status(
-    request: Request,
-    document_uuid: UUID,
-) -> KnowledgeFileVectorStatusResponse:
-    """查询一个知识文件当前在 Chroma 中的向量状态（Java 对账/重试前置校验）。"""
-
-    runtime: Runtime | None = getattr(request.app.state, "runtime", None)
-    if runtime is None or not getattr(request.app.state, "ready", False):
-        raise AppException(
-            CHAT_AGENT_UNAVAILABLE,
-            module="api.server",
-            operation="get_knowledge_file_vector_status",
-            stage="validate_runtime",
-            message="知识向量化 Runtime 尚未就绪",
-        )
-
-    chunk_count = runtime.get_document_chunk_count(str(document_uuid))
-    return KnowledgeFileVectorStatusResponse(
-        documentUuid=document_uuid,
-        chunkCount=chunk_count,
-    )
-
-
-@app.delete(
-    "/internal/knowledge-files/{document_uuid}",
-    response_model=DeleteKnowledgeDocumentResponse,
-)
-def delete_knowledge_file(
-    request: Request,
-    document_uuid: UUID,
-) -> DeleteKnowledgeDocumentResponse:
-    """按 document_uuid 幂等删除一个知识文件的全部向量。"""
-
-    runtime: Runtime | None = getattr(request.app.state, "runtime", None)
-    if runtime is None or not getattr(request.app.state, "ready", False):
-        raise AppException(
-            CHAT_AGENT_UNAVAILABLE,
-            module="api.server",
-            operation="delete_knowledge_file",
-            stage="validate_runtime",
-            message="知识向量化 Runtime 尚未就绪",
-        )
-
-    deleted_count = runtime.delete_document(str(document_uuid))
-    return DeleteKnowledgeDocumentResponse(
-        documentUuid=document_uuid,
-        deletedChunkCount=deleted_count,
+    return ChatResponse(
+        answer=result.answer,
+        title=result.title,
+        referenced_bid_record_ids=list(result.referenced_bid_record_ids),
     )
 
 
 def _configure_app_logging(level_name: str) -> None:
-    """按配置项设置应用日志级别，使观测回调的 debug/info 明细可见。"""
-
     level = getattr(logging, level_name.upper(), logging.INFO)
     logging.basicConfig(
         level=level,
@@ -320,8 +138,6 @@ def _configure_app_logging(level_name: str) -> None:
 
 
 def main() -> int:
-    """读取配置并启动单 worker Uvicorn Server。"""
-
     settings = get_http_server_settings()
     _configure_app_logging(settings.log_level)
     uvicorn.run(
@@ -340,18 +156,9 @@ if __name__ == "__main__":
 __all__ = [
     "ChatRequest",
     "ChatResponse",
-    "DeleteKnowledgeDocumentResponse",
-    "KnowledgeFileVectorStatusResponse",
-    "VectorizeDocumentRequest",
-    "VectorizeDocumentsRequest",
-    "VectorizeDocumentsResponse",
-    "VectorizedDocumentResponse",
     "app",
     "chat",
-    "delete_knowledge_file",
-    "get_knowledge_file_vector_status",
     "health",
     "lifespan",
     "main",
-    "vectorize_knowledge_files",
 ]

@@ -1,22 +1,41 @@
-"""定义 Agent 的唯一向量检索 Tool 及其运行时依赖。"""
+"""把 Agent 的检索 Tool 转发给独立 vector-service。"""
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
+from uuid import UUID
 
 from langchain.tools import ToolRuntime
-from langchain_core.documents import Document
 from langchain_core.tools import tool
-from langchain_core.vectorstores import VectorStore
 from pydantic import BaseModel, Field, field_validator
 
 from src.errors import AppException, KNOWLEDGE_RETRIEVAL_FAILED
 
 
-class QueryEmbedder(Protocol):
-    """向量检索 Tool 依赖的最小查询编码接口。"""
+class VectorSearchClient(Protocol):
+    """Agent 工具依赖的最小向量服务接口。"""
 
-    def embed_queries(self, texts: list[str]) -> list[list[float]]:
-        """一次返回全部查询的向量。"""
+    def search_knowledge(self, queries: list[str]) -> str: ...
+
+    def list_ingested_files(self) -> str: ...
+
+    def find_ingested_files(self, filename: str) -> str: ...
+
+    def read_knowledge_file(self, document_uuid: str) -> str: ...
+
+    def read_credential_file(self, file_uuid: str) -> str: ...
+
+    def search_bid_materials(self, queries: list[str]) -> str: ...
+
+    def search_bid_credentials(
+        self,
+        bid_record_id: int,
+        queries: list[str],
+    ) -> str: ...
+
+    def get_bid_record(self, bid_record_id: int) -> str: ...
+
+    def list_bid_records(self) -> str: ...
 
 
 class RetrieveInput(BaseModel):
@@ -30,19 +49,71 @@ class RetrieveInput(BaseModel):
     @field_validator("queries")
     @classmethod
     def normalize_queries(cls, queries: list[str]) -> list[str]:
-        normalized = [query.strip() for query in queries]
-        if any(not query for query in normalized):
-            raise ValueError("queries 中不能包含空查询")
+        return _normalize_queries(queries)
+
+
+class BidRecordInput(BaseModel):
+    bid_record_id: int = Field(
+        gt=0,
+        description=(
+            "仅当用户明确写出‘投标记录 13’这类纯数字记录编号时传入；"
+            "不得从 PUBLIC-E2E-8047 等知识编号、文件编号或其他字符串的数字部分推导。"
+        ),
+    )
+
+
+class FileLookupInput(BaseModel):
+    filename: str = Field(
+        min_length=1,
+        description="用户提到的原文件名，只传文件名本身，不要传整句问题。",
+    )
+
+    @field_validator("filename")
+    @classmethod
+    def normalize_filename(cls, filename: str) -> str:
+        normalized = filename.strip()
+        if not normalized:
+            raise ValueError("filename 不能为空")
         return normalized
+
+
+class KnowledgeFileInput(BaseModel):
+    document_uuid: str = Field(
+        description="find_ingested_files 返回的知识文件 document_uuid。",
+    )
+
+    @field_validator("document_uuid")
+    @classmethod
+    def validate_document_uuid(cls, value: str) -> str:
+        return _normalize_uuid(value, "document_uuid")
+
+
+class CredentialFileInput(BaseModel):
+    file_uuid: str = Field(
+        description="find_ingested_files 返回的资信文件 file_uuid。",
+    )
+
+    @field_validator("file_uuid")
+    @classmethod
+    def validate_file_uuid(cls, value: str) -> str:
+        return _normalize_uuid(value, "file_uuid")
+
+
+class BidCredentialRetrieveInput(RetrieveInput):
+    bid_record_id: int = Field(
+        gt=0,
+        description=(
+            "已由用户明确写出或 get_bid_record 确认的投标记录 ID；"
+            "不得从公共知识编号、文件编号或其他字符串的数字部分推导。"
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class RetrievalToolContext:
-    """向 Agent Tool 注入当前 Runtime 持有的向量检索依赖。"""
+    """向 Agent Tool 注入独立向量服务客户端。"""
 
-    vector_store: VectorStore
-    embeddings: QueryEmbedder
-    top_k: int
+    vector_client: VectorSearchClient
 
 
 @tool(args_schema=RetrieveInput)
@@ -50,118 +121,193 @@ def retrieve(
     queries: list[str],
     runtime: ToolRuntime[RetrievalToolContext],
 ) -> str:
-    """向量化查询并检索知识库，返回每个查询对应的知识片段。
+    """批量检索公共政策知识库，不会访问投标方私有资料。
 
-    涉及政策事实、定义、要求或来源时调用；若用户一轮提出多个问题，
-    必须把全部子问题放入同一个 queries 数组，只调用一次本工具。
-
-    本函数是完整的向量检索边界，内部依次完成：查询校验、批量查询向量化、
-    向量数量校验、Chroma 相似度检索和结果格式化。
-
-    依赖传导链：``Runtime.retrieval_context`` → ``RetrievalToolContext`` →
-    ``runtime.context.embeddings`` / ``runtime.context.vector_store`` → 本函数。
-    ``runtime`` 是 LangChain 在工具执行时自动注入的运行时参数，
-    不会暴露给模型作为工具入参。
+    含字母和连字符的公共知识编号（如 ``PUBLIC-E2E-8047``）必须在此检索，
+    其数字尾缀不是投标记录 ID。
     """
 
-    context = runtime.context
+    normalized = _normalize_queries(queries)
+    return _invoke(
+        "retrieve",
+        lambda: runtime.context.vector_client.search_knowledge(normalized),
+    )
+
+
+@tool
+def list_ingested_files(runtime: ToolRuntime[Any]) -> str:
+    """列出全部已向量化的知识文件和资信文件；用户询问有哪些文件时调用。"""
+
+    return _invoke(
+        "list_ingested_files",
+        runtime.context.vector_client.list_ingested_files,
+    )
+
+
+@tool(args_schema=FileLookupInput)
+def find_ingested_files(
+    filename: str,
+    runtime: ToolRuntime[RetrievalToolContext],
+) -> str:
+    """按原文件名跨知识库和资信材料查找文件。
+
+    用户提到具体文件名、询问某个文件内容或文件名可能有轻微拼写偏差时，必须先调用
+    本工具；不要在未查询前声称无法访问文件。返回结果会给出文件类型和稳定 UUID。
+    """
+
+    normalized = filename.strip()
+    return _invoke(
+        "find_ingested_files",
+        lambda: runtime.context.vector_client.find_ingested_files(normalized),
+    )
+
+
+@tool(args_schema=KnowledgeFileInput)
+def read_knowledge_file(
+    document_uuid: str,
+    runtime: ToolRuntime[RetrievalToolContext],
+) -> str:
+    """读取 find_ingested_files 已确定的知识文件全部正文片段。"""
+
+    normalized = _normalize_uuid(document_uuid, "document_uuid")
+    return _invoke(
+        "read_knowledge_file",
+        lambda: runtime.context.vector_client.read_knowledge_file(normalized),
+    )
+
+
+@tool(args_schema=CredentialFileInput)
+def read_credential_file(
+    file_uuid: str,
+    runtime: ToolRuntime[RetrievalToolContext],
+) -> str:
+    """读取已确定的资信文件正文及其关联投标记录，供综合分析使用。"""
+
+    normalized = _normalize_uuid(file_uuid, "file_uuid")
+    return _invoke(
+        "read_credential_file",
+        lambda: runtime.context.vector_client.read_credential_file(normalized),
+    )
+
+
+@tool(args_schema=RetrieveInput)
+def retrieve_bid_materials(
+    queries: list[str],
+    runtime: ToolRuntime[RetrievalToolContext],
+) -> str:
+    """跨全部投标记录和资信文件语义检索私有投标资料。
+
+    只用于投标记录、投标人、报价或资信材料问题；公共知识编号不得调用本工具。
+    """
+
+    normalized = _normalize_queries(queries)
+    return _invoke(
+        "retrieve_bid_materials",
+        lambda: runtime.context.vector_client.search_bid_materials(normalized),
+    )
+
+
+@tool(args_schema=BidCredentialRetrieveInput)
+def retrieve_bid_credentials(
+    bid_record_id: int,
+    queries: list[str],
+    runtime: ToolRuntime[RetrievalToolContext],
+) -> str:
+    """在一条已明确的投标记录内语义检索其资信文件正文。"""
+
+    normalized = _normalize_queries(queries)
+    return _invoke(
+        "retrieve_bid_credentials",
+        lambda: runtime.context.vector_client.search_bid_credentials(
+            bid_record_id,
+            normalized,
+        ),
+    )
+
+
+@tool(args_schema=BidRecordInput)
+def get_bid_record(
+    bid_record_id: int,
+    runtime: ToolRuntime[RetrievalToolContext],
+) -> str:
+    """按 ID 精确读取一条完整投标记录及其关联招标信息。"""
+
+    return _invoke(
+        "get_bid_record",
+        lambda: runtime.context.vector_client.get_bid_record(bid_record_id),
+    )
+
+
+@tool
+def list_bid_records(runtime: ToolRuntime[Any]) -> str:
+    """列出向量服务中的全部投标记录摘要，供模型动态确定记录 ID。"""
+
+    return _invoke(
+        "list_bid_records",
+        runtime.context.vector_client.list_bid_records,
+    )
+
+
+def _normalize_queries(queries: list[str]) -> list[str]:
     if isinstance(queries, (str, bytes)) or not queries:
-        raise _error(
-            stage="validate_queries",
-            message="批量检索至少需要一个查询",
-        )
-
-    normalized_queries: list[str] = []
-    for index, query in enumerate(queries):
+        raise _error("validate_queries", "批量检索至少需要一个查询")
+    normalized: list[str] = []
+    for query in queries:
         if not isinstance(query, str) or not query.strip():
-            raise _error(
-                stage="validate_queries",
-                message="批量检索查询不能为空",
-                details={"query_index": index},
-            )
-        normalized_queries.append(query.strip())
+            raise _error("validate_queries", "批量检索查询不能为空")
+        normalized.append(query.strip())
+    return normalized
 
-    if context.top_k <= 0:
-        raise _error(
-            stage="validate_config",
-            message="向量检索 top_k 必须大于 0",
-            details={"top_k": context.top_k},
-        )
 
+def _normalize_uuid(value: str, field_name: str) -> str:
     try:
-        # 将请求向量化
-        vectors = context.embeddings.embed_queries(normalized_queries)
+        return str(UUID(value.strip()))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} 必须是有效 UUID") from exc
+
+
+def _invoke(tool_name: str, call: Callable[[], str]) -> str:
+    try:
+        result = call()
     except AppException:
         raise
     except Exception as exc:
         raise _error(
-            stage="embed_queries",
-            message="批量查询向量生成失败",
-            details={"query_count": len(normalized_queries)},
+            "invoke_vector_service",
+            "独立向量服务检索失败",
         ) from exc
-
-    if len(vectors) != len(normalized_queries):
-        raise _error(
-            stage="validate_embeddings",
-            message="批量查询向量数量与查询数量不一致",
-            details={
-                "query_count": len(normalized_queries),
-                "embedding_count": len(vectors),
-            },
-        )
-
-    blocks: list[str] = []
-    for index, (query, vector) in enumerate(zip(normalized_queries, vectors)):
-        try:
-            # 向量检索数据库
-            documents = context.vector_store.similarity_search_by_vector(
-                vector,
-                k=context.top_k,
-            )
-        except Exception as exc:
-            raise _error(
-                stage="search_vector_store",
-                message="知识库向量检索失败",
-                details={"query_index": index, "query": query},
-            ) from exc
-
-        lines = [f"查询 {index + 1}：{query}"]
-        if not documents:
-            lines.append("未检索到相关知识片段。")
-        for document_index, document in enumerate(documents, start=1):
-            document_id = document.id or document.metadata.get("id", "未知")
-            source = document.metadata.get("source", "未知")
-            lines.append(
-                f"结果 {document_index}\n"
-                f"文档ID：{document_id}\n"
-                f"来源：{source}\n"
-                f"正文：\n{document.page_content}"
-            )
-        blocks.append("\n".join(lines))
-
-    print(f"模型调用工具：retrieve（{len(queries)} 个查询）", flush=True)
-    return "\n\n".join(blocks)
+    if not isinstance(result, str) or not result.strip():
+        raise _error("validate_response", "独立向量服务返回了空检索结果")
+    print(f"模型调用工具：{tool_name}", flush=True)
+    return result
 
 
-def _error(
-    *,
-    stage: str,
-    message: str,
-    details: dict[str, object] | None = None,
-) -> AppException:
+def _error(stage: str, message: str) -> AppException:
     return AppException(
         KNOWLEDGE_RETRIEVAL_FAILED,
         module="service.agent.tools.retrieve",
         operation="retrieve",
         stage=stage,
         message=message,
-        details=details,
     )
 
 
 __all__ = [
-    "QueryEmbedder",
+    "BidCredentialRetrieveInput",
+    "BidRecordInput",
+    "CredentialFileInput",
+    "FileLookupInput",
+    "KnowledgeFileInput",
     "RetrieveInput",
     "RetrievalToolContext",
+    "VectorSearchClient",
+    "find_ingested_files",
+    "get_bid_record",
+    "list_ingested_files",
+    "list_bid_records",
+    "read_credential_file",
+    "read_knowledge_file",
     "retrieve",
+    "retrieve_bid_credentials",
+    "retrieve_bid_materials",
 ]

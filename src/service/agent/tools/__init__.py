@@ -3,10 +3,23 @@
 from langchain_core.tools import tool
 
 from .retrieve import (
-    QueryEmbedder,
+    BidCredentialRetrieveInput,
+    BidRecordInput,
+    CredentialFileInput,
+    FileLookupInput,
+    KnowledgeFileInput,
     RetrieveInput,
     RetrievalToolContext,
+    VectorSearchClient,
+    find_ingested_files,
+    get_bid_record,
+    list_ingested_files,
+    list_bid_records,
+    read_credential_file,
+    read_knowledge_file,
     retrieve,
+    retrieve_bid_credentials,
+    retrieve_bid_materials,
 )
 
 
@@ -27,10 +40,23 @@ def semantic_search(query: str) -> str:
 
 
 __all__ = [
-    "QueryEmbedder",
+    "BidCredentialRetrieveInput",
+    "BidRecordInput",
+    "CredentialFileInput",
+    "FileLookupInput",
+    "KnowledgeFileInput",
     "RetrieveInput",
     "RetrievalToolContext",
+    "VectorSearchClient",
     "exact_paragraph_search",
+    "find_ingested_files",
+    "get_bid_record",
+    "list_ingested_files",
+    "list_bid_records",
+    "read_credential_file",
+    "read_knowledge_file",
     "retrieve",
+    "retrieve_bid_credentials",
+    "retrieve_bid_materials",
     "semantic_search",
 ]

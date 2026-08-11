@@ -113,4 +113,5 @@ def test_thread_config_accepts_callbacks() -> None:
     config = Runtime._thread_config("thread-1", callbacks=[handler])
 
     assert config["configurable"] == {"thread_id": "thread-1"}
+    assert config["recursion_limit"] == 25
     assert config["callbacks"] == [handler]
