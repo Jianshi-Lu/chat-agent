@@ -1,8 +1,32 @@
 """定义对话 Agent、Checkpointer 和独立向量服务的连接配置。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 import os
+from pathlib import Path
+
+
+def _load_local_environment() -> None:
+    """读取与本配置模块同目录的 .env，不覆盖进程或 IDE 已设置的变量。"""
+
+    env_file = Path(__file__).with_name(".env")
+    if not env_file.is_file():
+        return
+
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if name:
+            os.environ.setdefault(name, value)
+
+
+_load_local_environment()
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,7 +40,7 @@ class ChatModelSettings:
 
     base_url: str = "http://127.0.0.1:8000/v1"
     # 默认值仅用于未启用认证的本地兼容服务；实际 oMLX 密钥从环境变量注入。
-    api_key: str = "local"
+    api_key: str = field(default="local", repr=False)
     model_name: str = "Qwen3.6-35B-A3B-Claude-4.7-Opus-Reasoning-Distilled-MLX-oQ4-MTP"
 
     max_tokens: int = 131_072
@@ -30,20 +54,21 @@ class ChatModelSettings:
     system_prompt: str | None = (
         "你是招投标平台资料分析助手。你可以在任意会话中查询公共知识文件、全部"
         "投标记录及其资信材料，不要求用户在创建会话时预先绑定投标记录。"
-        "用户询问有哪些已入库文件时调用 list_ingested_files。用户提到具体文件名、"
+        "用户询问有哪些已入库文件时调用 list_files。用户提到具体文件名、"
         "近似文件名、带扩展名的文档，或结合上下文询问‘这个文件’时，必须先调用"
-        " find_ingested_files，不能在查询前声称无法访问文件。若只匹配一个文件，"
+        " find_file_by_name，不能在查询前声称无法访问文件。若只匹配一个文件，"
         "知识文件必须继续调用 read_knowledge_file，资信文件必须继续调用"
         " read_credential_file，再根据正文回答；若匹配多个文件，列出文件类型、"
         "文件名和投标记录 ID，请用户确认，不能自行猜测。"
         "PUBLIC-E2E-8047 这类包含字母和连字符的知识编号属于公共知识检索词，"
         "绝不能把末尾数字当成投标记录 ID；只有用户明确写出‘投标记录 13’时，"
-        "才可以调用 get_bid_record 或 retrieve_bid_credentials。"
-        "不指定文件名的公共知识问题调用 retrieve。涉及投标记录、投标人或跨文件"
+        "才可以调用 get_bid_record 或 retrieve_credential_files_by_bid_record_id。"
+        "不指定文件名的公共知识问题调用 retrieve_knowledge_files。涉及投标记录、投标人或跨文件"
         "资信分析时使用投标资料工具：浏览全部记录调用 list_bid_records；明确投标"
-        "记录 ID 时调用 get_bid_record；跨记录语义检索或比较调用"
-        " retrieve_bid_materials；明确记录 ID 并检索其资信正文时调用"
-        " retrieve_bid_credentials。需要综合分析时可以依次调用多个不同工具，"
+        "记录 ID 时调用 get_bid_record；跨记录检索投标人、报价、项目、公告或风险"
+        "事实时调用 retrieve_bid_records；跨记录检索资信正文时调用"
+        " retrieve_credential_files；明确记录 ID 并检索其资信正文时调用"
+        " retrieve_credential_files_by_bid_record_id。需要综合分析时可以依次调用多个不同工具，"
         "但不要用公共知识结果替代投标资料，也不要把私有投标资料当作公共知识。"
         "涉及资信材料的回答应明确说明所依据的投标记录 ID 和文件名，便于用户在"
         "界面中继续下载已检索到的资料。不要输出对象存储路径、内部 UUID、内部文件 ID 或自称可"
@@ -96,7 +121,7 @@ class CheckpointSettings:
     不提供关闭开关。
     """
 
-    database_url: str | None = None
+    database_url: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,12 +147,22 @@ class VectorServiceSettings:
             raise ValueError("vector-service timeout 必须大于 0")
 
 
+_DEFAULT_CHAT_MODEL_SETTINGS = ChatModelSettings()
+
+
 @lru_cache(maxsize=1)
 def get_chat_model_settings() -> ChatModelSettings:
     """返回进程内复用的对话模型配置实例。"""
 
     return ChatModelSettings(
-        api_key=os.environ.get("OMLX_API_KEY") or "local",
+        base_url=(
+            os.environ.get("OMLX_BASE_URL")
+            or _DEFAULT_CHAT_MODEL_SETTINGS.base_url
+        ),
+        api_key=(
+            os.environ.get("OMLX_API_KEY")
+            or _DEFAULT_CHAT_MODEL_SETTINGS.api_key
+        ),
     )
 
 

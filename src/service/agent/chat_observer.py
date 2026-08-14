@@ -2,8 +2,8 @@
 
 每次对话请求创建一个 ``AgentObservationHandler`` 实例，通过 LangChain 官方
 callback 机制收集模型调用、工具/检索调用、token 与耗时信息，并以项目统一的
-``log.info("...: key=%s, ...")`` 格式输出汇总日志。问题、prompt 与回答只记录
-截断摘要，避免敏感内容进入日志。
+``log.info("...: key=%s, ...")`` 格式输出汇总日志。任何日志级别都不记录问题、
+prompt、工具参数、检索词或回答正文，只记录长度等不可逆元数据。
 """
 
 from __future__ import annotations
@@ -19,16 +19,11 @@ from langchain_core.outputs import LLMResult
 
 log = logging.getLogger(__name__)
 
-_MAX_LOG_TEXT = 200
 
+def _text_length(text: object) -> int:
+    """只返回正文长度；不生成可被字典反推的稳定哈希。"""
 
-def _truncate(text: object, limit: int = _MAX_LOG_TEXT) -> str:
-    """把任意文本压成单行截断摘要。"""
-
-    compact = " ".join(str(text).split())
-    if len(compact) <= limit:
-        return compact
-    return compact[:limit] + "..."
+    return len(str(text))
 
 
 class AgentObservationHandler(BaseCallbackHandler):
@@ -68,15 +63,18 @@ class AgentObservationHandler(BaseCallbackHandler):
         self.llm_calls += 1
         self._llm_starts[run_id] = time.perf_counter()
         model = serialized.get("name") or kwargs.get("model") or ""
-        last_text = ""
+        input_length = 0
         if messages and messages[-1]:
-            last_text = _truncate(getattr(messages[-1][-1], "content", ""))
+            input_length = _text_length(
+                getattr(messages[-1][-1], "content", "")
+            )
         log.debug(
-            "模型调用开始: threadId=%s, requestId=%s, model=%s, input=%s",
+            "模型调用开始: threadId=%s, requestId=%s, model=%s, "
+            "inputLength=%s",
             self.thread_id,
             self.request_id,
             model,
-            last_text,
+            input_length,
         )
 
     def on_llm_end(
@@ -113,10 +111,10 @@ class AgentObservationHandler(BaseCallbackHandler):
         self._llm_starts.pop(run_id, None)
         self.error_count += 1
         log.warning(
-            "模型调用失败: threadId=%s, requestId=%s, reason=%s",
+            "模型调用失败: threadId=%s, requestId=%s, exceptionType=%s",
             self.thread_id,
             self.request_id,
-            error,
+            type(error).__name__,
         )
 
     # ---------- 工具 / 检索 ----------
@@ -132,12 +130,14 @@ class AgentObservationHandler(BaseCallbackHandler):
         self.tool_calls += 1
         self._tool_starts[run_id] = time.perf_counter()
         tool = serialized.get("name") or ""
+        input_length = _text_length(input_str)
         log.debug(
-            "工具调用开始: threadId=%s, requestId=%s, tool=%s, input=%s",
+            "工具调用开始: threadId=%s, requestId=%s, tool=%s, "
+            "inputLength=%s",
             self.thread_id,
             self.request_id,
             tool,
-            _truncate(input_str),
+            input_length,
         )
 
     def on_tool_end(
@@ -172,10 +172,10 @@ class AgentObservationHandler(BaseCallbackHandler):
         self._tool_starts.pop(run_id, None)
         self.error_count += 1
         log.warning(
-            "工具调用失败: threadId=%s, requestId=%s, reason=%s",
+            "工具调用失败: threadId=%s, requestId=%s, exceptionType=%s",
             self.thread_id,
             self.request_id,
-            error,
+            type(error).__name__,
         )
 
     def on_retriever_start(
@@ -185,11 +185,12 @@ class AgentObservationHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         self.retrieval_calls += 1
+        query_length = _text_length(query)
         log.debug(
-            "检索开始: threadId=%s, requestId=%s, query=%s",
+            "检索开始: threadId=%s, requestId=%s, queryLength=%s",
             self.thread_id,
             self.request_id,
-            _truncate(query),
+            query_length,
         )
 
     def on_retriever_end(

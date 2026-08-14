@@ -5,12 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import os
-from pprint import pformat
 import re
 
 import pymysql
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -44,17 +42,22 @@ from .agent.middlewares.title_generator import (
     ChatTitleState,
     ConversationTitleGenerator,
 )
+from .agent.middlewares.history_projection import (
+    CheckpointHistoryProjectionMiddleware,
+    ProjectedSummarizationMiddleware,
+)
 from .agent.tools import (
     RetrievalToolContext,
-    find_ingested_files,
+    find_file_by_name,
     get_bid_record,
-    list_ingested_files,
+    list_files,
     list_bid_records,
     read_credential_file,
     read_knowledge_file,
-    retrieve,
-    retrieve_bid_credentials,
-    retrieve_bid_materials,
+    retrieve_bid_records,
+    retrieve_credential_files_by_bid_record_id,
+    retrieve_credential_files,
+    retrieve_knowledge_files,
 )
 from .vector_client import VectorServiceClient
 
@@ -67,13 +70,15 @@ _OBSERVATION_ENV = "CHAT_AGENT_OBSERVATION_ENABLED"
 _AGENT_RECURSION_LIMIT = 25
 _REFERENCE_TOOL_NAMES = frozenset(
     {
-        "find_ingested_files",
+        "find_file_by_name",
         "read_credential_file",
-        "retrieve_bid_credentials",
-        "retrieve_bid_materials",
+        "retrieve_credential_files_by_bid_record_id",
+        "retrieve_credential_files",
     }
 )
-_PUBLIC_KNOWLEDGE_TOOL_NAMES = frozenset({"retrieve", "read_knowledge_file"})
+_PUBLIC_KNOWLEDGE_TOOL_NAMES = frozenset(
+    {"retrieve_knowledge_files", "read_knowledge_file"}
+)
 _BID_RECORD_ID_PATTERNS = (
     re.compile(r"投标记录\s*(?:ID)?\s*(?:[：:]|\s)\s*(\d+)"),
     re.compile(r"(?m)^ID\s+(\d+)(?=\s*[；;])"),
@@ -85,10 +90,10 @@ _PUBLIC_KNOWLEDGE_IDENTIFIER_PATTERN = re.compile(
     r"\b(?:PUBLIC|POLICY|KNOWLEDGE)(?:[-_][A-Z0-9]+)+\b", re.IGNORECASE
 )
 _PUBLIC_KNOWLEDGE_NOT_FOUND_PREFIX = "未找到包含公共知识编号"
-_BID_MATERIAL_INTENT_PATTERN = re.compile(
+_PRIVATE_RETRIEVAL_INTENT_PATTERN = re.compile(
     r"投标记录|投标人|资信|报价|证书|注册资本|供应商|竞标"
 )
-_CREDENTIAL_MATERIAL_INTENT_PATTERN = re.compile(r"资信|文件|证书|注册资本|材料|下载")
+_CREDENTIAL_FILE_INTENT_PATTERN = re.compile(r"资信|文件|证书|注册资本|材料|下载")
 _MAX_REFERENCED_BID_RECORDS = 12
 _INTERNAL_REFERENCE_LINE_PATTERN = re.compile(
     r"(?mi)^[ \t]*(?:[-*][ \t]*)?(?:\*{1,2})?(?:文件[ \t]*)?"
@@ -161,7 +166,6 @@ class Runtime:
         self.agent: Runnable | None = None
         self.checkpointer: BaseCheckpointSaver | None = None
         self._checkpoint_connection: pymysql.Connection | None = None
-        self.title_generator: ConversationTitleGenerator | None = None
         self._trace_state = _state_trace_enabled()
         self._observation_enabled = _observation_enabled()
 
@@ -206,7 +210,8 @@ class Runtime:
             )
             self.checkpointer = PyMySQLSaver(self._checkpoint_connection)
             self.checkpointer.setup()
-            self.title_generator = ConversationTitleGenerator(model=self.chat_model)
+            history_projection = CheckpointHistoryProjectionMiddleware()
+            title_generator = ConversationTitleGenerator(model=self.chat_model)
 
             summary_model = self.chat_model
             if (
@@ -221,10 +226,10 @@ class Runtime:
                     ),
                     **common_model_kwargs,
                 )
-            middleware = [self.title_generator]
+            middleware = [history_projection, title_generator]
             if self.context_compression_settings.enabled:
                 middleware.append(
-                    SummarizationMiddleware(
+                    ProjectedSummarizationMiddleware(
                         model=summary_model,
                         trigger=(
                             "tokens",
@@ -239,15 +244,16 @@ class Runtime:
             self.agent = create_agent(
                 model=self.chat_model,
                 tools=[
-                    retrieve,
-                    list_ingested_files,
-                    find_ingested_files,
+                    retrieve_knowledge_files,
+                    list_files,
+                    find_file_by_name,
                     read_knowledge_file,
                     read_credential_file,
                     list_bid_records,
                     get_bid_record,
-                    retrieve_bid_materials,
-                    retrieve_bid_credentials,
+                    retrieve_credential_files,
+                    retrieve_bid_records,
+                    retrieve_credential_files_by_bid_record_id,
                 ],
                 middleware=middleware,
                 state_schema=ChatTitleState,
@@ -347,7 +353,7 @@ class Runtime:
                     [question]
                 )
                 is_public_knowledge_only = not bool(
-                    _BID_MATERIAL_INTENT_PATTERN.search(question)
+                    _PRIVATE_RETRIEVAL_INTENT_PATTERN.search(question)
                 )
                 if (
                     is_public_knowledge_only
@@ -372,7 +378,7 @@ class Runtime:
                 # 中已经过期的回答。每轮重新读取记录；涉及资信材料时再限定到
                 # 当前记录检索资料，并由这份新证据决定是否展示下载卡片。
                 credential_query = bool(
-                    _CREDENTIAL_MATERIAL_INTENT_PATTERN.search(question)
+                    _CREDENTIAL_FILE_INTENT_PATTERN.search(question)
                 )
                 current_references: list[int] = []
                 missing_bid_record_ids: list[int] = []
@@ -392,7 +398,7 @@ class Runtime:
                     if not credential_query:
                         continue
                     credential_evidence = (
-                        self.retrieval_context.vector_client.search_bid_credentials(
+                        self.retrieval_context.vector_client.search_credential_files_by_bid_record_id(
                             bid_record_id,
                             [question],
                         )
@@ -465,7 +471,7 @@ class Runtime:
         except AppException:
             raise
         except Exception as exc:
-            log.exception(
+            log.error(
                 "Agent 调用失败: threadId=%s, exceptionType=%s",
                 thread_id,
                 type(exc).__name__,
@@ -521,7 +527,7 @@ class Runtime:
         # 投标资料工具，也不能把无关资信文件呈现在该公共知识回答下。
         is_public_knowledge_only = bool(
             _PUBLIC_KNOWLEDGE_IDENTIFIER_PATTERN.search(question)
-        ) and not bool(_BID_MATERIAL_INTENT_PATTERN.search(question))
+        ) and not bool(_PRIVATE_RETRIEVAL_INTENT_PATTERN.search(question))
         if is_public_knowledge_only:
             return ()
 
@@ -641,10 +647,16 @@ class Runtime:
 
     @staticmethod
     def _print_state(label: str, state: object) -> None:
+        """开发 trace 只输出容器元数据，绝不派生或输出状态正文。"""
+
+        item_count: int | str
+        try:
+            item_count = len(state)  # type: ignore[arg-type]
+        except (TypeError, AttributeError):
+            item_count = "unknown"
         print(
-            f"\n===== Agent State ({label}) =====\n"
-            f"{pformat(state, width=120, sort_dicts=False)}\n"
-            "===== End Agent State =====",
+            f"Agent State Trace: label={label}, type={type(state).__name__}, "
+            f"itemCount={item_count}",
             flush=True,
         )
 
@@ -710,7 +722,6 @@ class Runtime:
         vector_client = self.vector_client
         self._checkpoint_connection = None
         self.checkpointer = None
-        self.title_generator = None
         self.vector_client = None
         self.retrieval_context = None
         self.agent = None

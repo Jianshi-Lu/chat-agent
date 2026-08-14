@@ -88,7 +88,31 @@ def test_search_hides_internal_object_storage_source(monkeypatch) -> None:
     )
     client = VectorServiceClient(VectorServiceSettings())
 
-    assert client.search_bid_materials(["示例"]) == "文件：example.pdf\n正文：内容"
+    assert client.search_credential_files(["示例"]) == "文件：example.pdf\n正文：内容"
+
+
+def test_credential_search_uses_renamed_vector_service_endpoint(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request, *, timeout: float):
+        captured["url"] = request.full_url
+        captured["method"] = request.method
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return FakeResponse({"text": "检索结果"})
+
+    monkeypatch.setattr(client_module, "urlopen", fake_urlopen)
+    client = VectorServiceClient(
+        VectorServiceSettings(base_url="http://127.0.0.1:8083", timeout=9)
+    )
+
+    assert client.search_credential_files(["资信"]) == "检索结果"
+    assert captured == {
+        "url": "http://127.0.0.1:8083/internal/search/credential-files",
+        "method": "POST",
+        "body": {"queries": ["资信"]},
+        "timeout": 9,
+    }
 
 
 def test_read_credential_hides_internal_object_path_and_file_uuid(monkeypatch) -> None:
@@ -140,8 +164,8 @@ def test_file_tools_use_exact_vector_service_endpoints(monkeypatch) -> None:
     document_uuid = "550e8400-e29b-41d4-a716-446655440000"
     file_uuid = "550e8400-e29b-41d4-a716-446655440001"
 
-    assert client.list_ingested_files() == "文件结果"
-    assert client.find_ingested_files("complex.pdf") == "文件结果"
+    assert client.list_files() == "文件结果"
+    assert client.find_file_by_name("complex.pdf") == "文件结果"
     assert client.read_knowledge_file(document_uuid) == "文件结果"
     assert client.read_credential_file(file_uuid) == "文件结果"
 
@@ -174,6 +198,56 @@ def test_file_tools_use_exact_vector_service_endpoints(monkeypatch) -> None:
             ),
             "method": "GET",
             "body": None,
+            "timeout": 9,
+        },
+    ]
+
+
+def test_private_searches_use_separate_vector_service_endpoints(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    def fake_urlopen(request, *, timeout: float):
+        captured.append(
+            {
+                "url": request.full_url,
+                "method": request.method,
+                "body": json.loads(request.data.decode("utf-8")),
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse({"text": "检索结果"})
+
+    monkeypatch.setattr(client_module, "urlopen", fake_urlopen)
+    client = VectorServiceClient(
+        VectorServiceSettings(base_url="http://127.0.0.1:8083", timeout=9)
+    )
+
+    assert client.search_credential_files(["资质"]) == "检索结果"
+    assert client.search_bid_records(["报价"]) == "检索结果"
+    assert (
+        client.search_credential_files_by_bid_record_id(13, ["证书"])
+        == "检索结果"
+    )
+
+    assert captured == [
+        {
+            "url": "http://127.0.0.1:8083/internal/search/credential-files",
+            "method": "POST",
+            "body": {"queries": ["资质"]},
+            "timeout": 9,
+        },
+        {
+            "url": "http://127.0.0.1:8083/internal/search/bid-records",
+            "method": "POST",
+            "body": {"queries": ["报价"]},
+            "timeout": 9,
+        },
+        {
+            "url": (
+                "http://127.0.0.1:8083/internal/search/bid-records/13/credentials"
+            ),
+            "method": "POST",
+            "body": {"queries": ["证书"]},
             "timeout": 9,
         },
     ]

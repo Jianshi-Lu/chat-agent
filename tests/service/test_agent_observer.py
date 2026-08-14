@@ -44,11 +44,15 @@ def test_handler_aggregates_metrics_and_logs_summary(caplog) -> None:
         ),
         run_id=model_run_id,
     )
-    handler.on_tool_start({"name": "retrieve"}, "查询", run_id=tool_run_id)
+    handler.on_tool_start(
+        {"name": "retrieve_knowledge_files"},
+        "查询",
+        run_id=tool_run_id,
+    )
     handler.on_tool_end("结果", run_id=tool_run_id)
     handler.on_retriever_start({}, "查询")
     handler.on_retriever_end([1, 2])
-    handler.on_agent_action(SimpleNamespace(tool="retrieve"))
+    handler.on_agent_action(SimpleNamespace(tool="retrieve_knowledge_files"))
 
     with caplog.at_level(
         logging.INFO,
@@ -63,6 +67,46 @@ def test_handler_aggregates_metrics_and_logs_summary(caplog) -> None:
     assert "retrievalCalls=1" in caplog.text
     assert "agentSteps=1" in caplog.text
     assert "errorCount=0" in caplog.text
+
+
+def test_debug_observation_logs_never_include_prompt_or_tool_text(caplog) -> None:
+    secret = "PRIVATE-CREDENTIAL-CONTENT"
+    handler = AgentObservationHandler(thread_id="thread-1", question=secret)
+    model_run_id = uuid.uuid4()
+    tool_run_id = uuid.uuid4()
+
+    with caplog.at_level(logging.DEBUG, logger="src.service.agent.chat_observer"):
+        handler.on_chat_model_start(
+            {"name": "ChatOpenAI"},
+            [[HumanMessage(content=secret)]],
+            run_id=model_run_id,
+        )
+        handler.on_tool_start(
+            {"name": "retrieve_knowledge_files"},
+            secret,
+            run_id=tool_run_id,
+        )
+        handler.on_retriever_start({}, secret)
+        handler.on_llm_error(RuntimeError(secret), run_id=model_run_id)
+        handler.on_tool_error(RuntimeError(secret), run_id=tool_run_id)
+
+    assert secret not in caplog.text
+    assert "inputLength=" in caplog.text
+    assert "queryLength=" in caplog.text
+    assert "Sha256=" not in caplog.text
+    assert "exceptionType=RuntimeError" in caplog.text
+
+
+def test_state_trace_never_outputs_or_hashes_state_content(capsys) -> None:
+    secret = "LOW-ENTROPY-SECRET"
+
+    Runtime._print_state("result", {"messages": [secret]})
+
+    output = capsys.readouterr().out
+    assert secret not in output
+    assert "sha256" not in output.casefold()
+    assert "type=dict" in output
+    assert "itemCount=1" in output
 
 
 def test_answer_attaches_observation_handler_when_enabled() -> None:

@@ -20,17 +20,21 @@ from src.service.agent.middlewares.title_generator import (
     ChatTitleState,
     ConversationTitleGenerator,
 )
+from src.service.agent.middlewares.history_projection import (
+    CheckpointHistoryProjectionMiddleware,
+)
 from src.service.agent.tools import (
     RetrievalToolContext,
-    find_ingested_files,
+    find_file_by_name,
     get_bid_record,
-    list_ingested_files,
+    list_files,
     list_bid_records,
     read_credential_file,
     read_knowledge_file,
-    retrieve,
-    retrieve_bid_credentials,
-    retrieve_bid_materials,
+    retrieve_bid_records,
+    retrieve_credential_files_by_bid_record_id,
+    retrieve_credential_files,
+    retrieve_knowledge_files,
 )
 from src.service.runtime import Runtime
 
@@ -110,20 +114,23 @@ def test_runtime_creates_official_agent_with_vector_service_context(monkeypatch)
 
     assert runtime.agent is runnable
     assert captured["tools"] == [
-        retrieve,
-        list_ingested_files,
-        find_ingested_files,
+        retrieve_knowledge_files,
+        list_files,
+        find_file_by_name,
         read_knowledge_file,
         read_credential_file,
         list_bid_records,
         get_bid_record,
-        retrieve_bid_materials,
-        retrieve_bid_credentials,
+        retrieve_credential_files,
+        retrieve_bid_records,
+        retrieve_credential_files_by_bid_record_id,
     ]
     assert captured["context_schema"] is RetrievalToolContext
     assert captured["state_schema"] is ChatTitleState
-    assert captured["middleware"] == [runtime.title_generator]
-    assert isinstance(runtime.title_generator, ConversationTitleGenerator)
+    assert isinstance(
+        captured["middleware"][0], CheckpointHistoryProjectionMiddleware
+    )
+    assert isinstance(captured["middleware"][1], ConversationTitleGenerator)
     assert captured["checkpointer"] is runtime.checkpointer
     assert isinstance(runtime.checkpointer, FakePyMySQLSaver)
     assert runtime.checkpointer.setup_called is True
@@ -153,7 +160,7 @@ def _runtime_with_runnable(runnable: Mock) -> Runtime:
     vector_client = Mock()
     vector_client.search_knowledge.return_value = "正文：PUBLIC-E2E-8047"
     vector_client.get_bid_record.return_value = "投标记录 ID：13\n投标人名称：testing"
-    vector_client.search_bid_credentials.return_value = (
+    vector_client.search_credential_files_by_bid_record_id.return_value = (
         "投标记录 ID：13\n文件：credential.pdf"
     )
     runtime.retrieval_context = RetrievalToolContext(vector_client=vector_client)
@@ -202,7 +209,7 @@ def test_runtime_returns_only_ids_referenced_by_material_tools() -> None:
     runnable.invoke.return_value = {
         "messages": [
             ToolMessage(
-                name="retrieve_bid_credentials",
+                name="retrieve_credential_files_by_bid_record_id",
                 tool_call_id="tool-1",
                 content=(
                     "查询 1：证书编号\n投标记录 ID：17\n"
@@ -230,7 +237,7 @@ def test_runtime_keeps_only_the_explicitly_requested_bid_record_reference() -> N
     runnable.invoke.return_value = {
         "messages": [
             ToolMessage(
-                name="retrieve_bid_materials",
+                name="retrieve_credential_files",
                 tool_call_id="tool-1",
                 content="投标记录 ID：13\n投标记录 ID：11",
             ),
@@ -260,7 +267,7 @@ def test_runtime_retrieves_current_bid_credentials_before_reusing_history() -> N
     runtime.retrieval_context.vector_client.get_bid_record.return_value = (
         "投标记录 ID：13\n投标人名称：testing"
     )
-    runtime.retrieval_context.vector_client.search_bid_credentials.return_value = (
+    runtime.retrieval_context.vector_client.search_credential_files_by_bid_record_id.return_value = (
         "投标记录 ID：13\n文件：complex_pdf.pdf"
     )
 
@@ -268,7 +275,7 @@ def test_runtime_retrieves_current_bid_credentials_before_reusing_history() -> N
 
     assert result.referenced_bid_record_ids == (13,)
     runtime.retrieval_context.vector_client.get_bid_record.assert_called_once_with(13)
-    runtime.retrieval_context.vector_client.search_bid_credentials.assert_called_once_with(
+    runtime.retrieval_context.vector_client.search_credential_files_by_bid_record_id.assert_called_once_with(
         13,
         [question],
     )
@@ -293,7 +300,7 @@ def test_runtime_does_not_reuse_deleted_bid_record_from_history() -> None:
     )
     assert result.referenced_bid_record_ids == ()
     runnable.invoke.assert_not_called()
-    runtime.retrieval_context.vector_client.search_bid_credentials.assert_not_called()
+    runtime.retrieval_context.vector_client.search_credential_files_by_bid_record_id.assert_not_called()
 
 
 def test_runtime_never_attaches_bid_file_cards_to_a_public_knowledge_identifier() -> None:
@@ -301,7 +308,7 @@ def test_runtime_never_attaches_bid_file_cards_to_a_public_knowledge_identifier(
     runnable.invoke.return_value = {
         "messages": [
             ToolMessage(
-                name="retrieve_bid_materials",
+                name="retrieve_credential_files",
                 tool_call_id="tool-1",
                 content="投标记录 ID：13",
             ),
@@ -323,7 +330,7 @@ def test_runtime_rejects_public_identifier_answer_without_tool_evidence() -> Non
     runnable.invoke.return_value = {
         "messages": [
             ToolMessage(
-                name="retrieve",
+                name="retrieve_knowledge_files",
                 tool_call_id="tool-1",
                 content="文件：通用说明.pdf\n正文：保证金说明",
             ),
@@ -351,7 +358,7 @@ def test_runtime_keeps_public_identifier_answer_with_tool_evidence() -> None:
     runnable.invoke.return_value = {
         "messages": [
             ToolMessage(
-                name="retrieve",
+                name="retrieve_knowledge_files",
                 tool_call_id="tool-1",
                 content="正文：PUBLIC-E2E-8047，保证金 88,888 元",
             ),
@@ -375,19 +382,19 @@ def test_runtime_does_not_reuse_previous_turn_tool_evidence() -> None:
         "messages": [
             HumanMessage(content=question),
             ToolMessage(
-                name="retrieve",
+                name="retrieve_knowledge_files",
                 tool_call_id="old-tool",
                 content="正文：PUBLIC-E2E-LIVE-1527，保证金 152,700 元",
             ),
             AIMessage(content="保证金是 152,700 元。"),
             HumanMessage(content=question),
             ToolMessage(
-                name="retrieve",
+                name="retrieve_knowledge_files",
                 tool_call_id="current-tool",
                 content="文件：通用说明.pdf\n正文：保证金说明",
             ),
             ToolMessage(
-                name="retrieve_bid_materials",
+                name="retrieve_credential_files",
                 tool_call_id="current-material-tool",
                 content="投标记录 ID：13",
             ),

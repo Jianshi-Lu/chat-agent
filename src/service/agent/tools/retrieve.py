@@ -17,17 +17,19 @@ class VectorSearchClient(Protocol):
 
     def search_knowledge(self, queries: list[str]) -> str: ...
 
-    def list_ingested_files(self) -> str: ...
+    def list_files(self) -> str: ...
 
-    def find_ingested_files(self, filename: str) -> str: ...
+    def find_file_by_name(self, filename: str) -> str: ...
 
     def read_knowledge_file(self, document_uuid: str) -> str: ...
 
     def read_credential_file(self, file_uuid: str) -> str: ...
 
-    def search_bid_materials(self, queries: list[str]) -> str: ...
+    def search_credential_files(self, queries: list[str]) -> str: ...
 
-    def search_bid_credentials(
+    def search_bid_records(self, queries: list[str]) -> str: ...
+
+    def search_credential_files_by_bid_record_id(
         self,
         bid_record_id: int,
         queries: list[str],
@@ -79,7 +81,7 @@ class FileLookupInput(BaseModel):
 
 class KnowledgeFileInput(BaseModel):
     document_uuid: str = Field(
-        description="find_ingested_files 返回的知识文件 document_uuid。",
+        description="find_file_by_name 返回的知识文件 document_uuid。",
     )
 
     @field_validator("document_uuid")
@@ -90,7 +92,7 @@ class KnowledgeFileInput(BaseModel):
 
 class CredentialFileInput(BaseModel):
     file_uuid: str = Field(
-        description="find_ingested_files 返回的资信文件 file_uuid。",
+        description="find_file_by_name 返回的资信文件 file_uuid。",
     )
 
     @field_validator("file_uuid")
@@ -117,7 +119,7 @@ class RetrievalToolContext:
 
 
 @tool(args_schema=RetrieveInput)
-def retrieve(
+def retrieve_knowledge_files(
     queries: list[str],
     runtime: ToolRuntime[RetrievalToolContext],
 ) -> str:
@@ -129,23 +131,23 @@ def retrieve(
 
     normalized = _normalize_queries(queries)
     return _invoke(
-        "retrieve",
+        "retrieve_knowledge_files",
         lambda: runtime.context.vector_client.search_knowledge(normalized),
     )
 
 
 @tool
-def list_ingested_files(runtime: ToolRuntime[Any]) -> str:
+def list_files(runtime: ToolRuntime[Any]) -> str:
     """列出全部已向量化的知识文件和资信文件；用户询问有哪些文件时调用。"""
 
     return _invoke(
-        "list_ingested_files",
-        runtime.context.vector_client.list_ingested_files,
+        "list_files",
+        runtime.context.vector_client.list_files,
     )
 
 
 @tool(args_schema=FileLookupInput)
-def find_ingested_files(
+def find_file_by_name(
     filename: str,
     runtime: ToolRuntime[RetrievalToolContext],
 ) -> str:
@@ -157,8 +159,8 @@ def find_ingested_files(
 
     normalized = filename.strip()
     return _invoke(
-        "find_ingested_files",
-        lambda: runtime.context.vector_client.find_ingested_files(normalized),
+        "find_file_by_name",
+        lambda: runtime.context.vector_client.find_file_by_name(normalized),
     )
 
 
@@ -167,7 +169,7 @@ def read_knowledge_file(
     document_uuid: str,
     runtime: ToolRuntime[RetrievalToolContext],
 ) -> str:
-    """读取 find_ingested_files 已确定的知识文件全部正文片段。"""
+    """读取 find_file_by_name 已确定的知识文件全部正文片段。"""
 
     normalized = _normalize_uuid(document_uuid, "document_uuid")
     return _invoke(
@@ -191,24 +193,38 @@ def read_credential_file(
 
 
 @tool(args_schema=RetrieveInput)
-def retrieve_bid_materials(
+def retrieve_credential_files(
     queries: list[str],
     runtime: ToolRuntime[RetrievalToolContext],
 ) -> str:
-    """跨全部投标记录和资信文件语义检索私有投标资料。
+    """跨全部投标记录语义检索资信文件正文。
 
-    只用于投标记录、投标人、报价或资信材料问题；公共知识编号不得调用本工具。
+    只用于资质、证书、附件等资信材料问题；公共知识编号不得调用本工具。
     """
 
     normalized = _normalize_queries(queries)
     return _invoke(
-        "retrieve_bid_materials",
-        lambda: runtime.context.vector_client.search_bid_materials(normalized),
+        "retrieve_credential_files",
+        lambda: runtime.context.vector_client.search_credential_files(normalized),
+    )
+
+
+@tool(args_schema=RetrieveInput)
+def retrieve_bid_records(
+    queries: list[str],
+    runtime: ToolRuntime[RetrievalToolContext],
+) -> str:
+    """跨全部投标记录检索投标人、报价、项目、公告和风险等结构化事实。"""
+
+    normalized = _normalize_queries(queries)
+    return _invoke(
+        "retrieve_bid_records",
+        lambda: runtime.context.vector_client.search_bid_records(normalized),
     )
 
 
 @tool(args_schema=BidCredentialRetrieveInput)
-def retrieve_bid_credentials(
+def retrieve_credential_files_by_bid_record_id(
     bid_record_id: int,
     queries: list[str],
     runtime: ToolRuntime[RetrievalToolContext],
@@ -217,8 +233,8 @@ def retrieve_bid_credentials(
 
     normalized = _normalize_queries(queries)
     return _invoke(
-        "retrieve_bid_credentials",
-        lambda: runtime.context.vector_client.search_bid_credentials(
+        "retrieve_credential_files_by_bid_record_id",
+        lambda: runtime.context.vector_client.search_credential_files_by_bid_record_id(
             bid_record_id,
             normalized,
         ),
@@ -301,13 +317,14 @@ __all__ = [
     "RetrieveInput",
     "RetrievalToolContext",
     "VectorSearchClient",
-    "find_ingested_files",
+    "find_file_by_name",
     "get_bid_record",
-    "list_ingested_files",
+    "list_files",
     "list_bid_records",
     "read_credential_file",
     "read_knowledge_file",
-    "retrieve",
-    "retrieve_bid_credentials",
-    "retrieve_bid_materials",
+    "retrieve_bid_records",
+    "retrieve_credential_files_by_bid_record_id",
+    "retrieve_credential_files",
+    "retrieve_knowledge_files",
 ]

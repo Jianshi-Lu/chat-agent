@@ -12,11 +12,13 @@ uv run python -m src.api.server
 ```
 
 默认监听 `127.0.0.1:8082`，并要求 vector-service 已在 `127.0.0.1:8083` 就绪。
+运行配置从 `configuration/.env` 读取；IDE 或启动进程中已设置的同名环境变量优先覆盖
+`.env` 中的值。
 常用配置：
 
 - `VECTOR_SERVICE_BASE_URL` / `VECTOR_SERVICE_TIMEOUT`：向量检索服务；
 - `CHAT_AGENT_CHECKPOINT_DATABASE_URL`：LangGraph Checkpointer 独立 MySQL；
-- `OMLX_API_KEY`：本地 OpenAI-compatible 对话模型认证信息；
+- `OMLX_BASE_URL` / `OMLX_API_KEY`：本地 OpenAI-compatible 对话模型地址与认证信息；
 - `CHAT_AGENT_LOG_LEVEL`：服务日志级别。
 
 HTTP 服务只公开 `/health` 和 `/chat`。Java 负责平台会话、消息、幂等请求和角色边界，

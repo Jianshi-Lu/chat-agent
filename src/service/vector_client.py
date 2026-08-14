@@ -85,13 +85,13 @@ class VectorServiceClient:
             return f"未找到包含公共知识编号{quoted_identifiers}的当前已入库内容。"
         return response
 
-    def list_ingested_files(self) -> str:
+    def list_files(self) -> str:
         return self._response_text(
             self._request("GET", "/internal/search/files"),
             preserve_file_identifiers=True,
         )
 
-    def find_ingested_files(self, filename: str) -> str:
+    def find_file_by_name(self, filename: str) -> str:
         return self._response_text(
             self._request("POST", "/internal/search/files", {"filename": filename}),
             preserve_file_identifiers=True,
@@ -113,10 +113,13 @@ class VectorServiceClient:
             )
         )
 
-    def search_bid_materials(self, queries: list[str]) -> str:
-        return self._search("/internal/search/bid-materials", queries)
+    def search_credential_files(self, queries: list[str]) -> str:
+        return self._search("/internal/search/credential-files", queries)
 
-    def search_bid_credentials(
+    def search_bid_records(self, queries: list[str]) -> str:
+        return self._search("/internal/search/bid-records", queries)
+
+    def search_credential_files_by_bid_record_id(
         self,
         bid_record_id: int,
         queries: list[str],
